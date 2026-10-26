@@ -3,13 +3,182 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Hello World | agiq.top</title>
+  <title>agiq.top</title>
   <style>
-    body { margin:0; height:100vh; display:flex; align-items:center; justify-content:center; font-family:system-ui,sans-serif; background:#0b0f1a; color:#e6edf3; }
-    h1 { font-size:3rem; }
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: system-ui, sans-serif;
+      background: #0b0f1a;
+      color: #e6edf3;
+    }
+    main {
+      width: min(720px, 100%);
+      margin: 0 auto;
+      min-height: 100vh;
+      padding: 28px 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    h1 { margin: 0; font-size: 1.7rem; font-weight: 650; }
+    .note { margin: 6px 0 0; color: #9aa7b8; line-height: 1.45; }
+    #log {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-height: 240px;
+    }
+    .msg {
+      margin: 0;
+      padding: 10px 12px;
+      border-radius: 12px;
+      max-width: min(85%, 36rem);
+      white-space: pre-wrap;
+      line-height: 1.45;
+    }
+    .user { align-self: flex-end; background: #1f6feb; }
+    .agent { align-self: flex-start; background: #161b22; border: 1px solid #30363d; }
+    .error { align-self: flex-start; color: #ffb4a8; }
+    form { display: flex; gap: 8px; align-items: flex-end; }
+    .sr {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      border: 0;
+    }
+    textarea {
+      flex: 1;
+      resize: vertical;
+      min-height: 48px;
+      max-height: 160px;
+      background: #0d1117;
+      color: inherit;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font: inherit;
+    }
+    button {
+      flex: none;
+      background: #e6edf3;
+      color: #0b0f1a;
+      border: 0;
+      border-radius: 10px;
+      padding: 12px 16px;
+      font: inherit;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.55; cursor: wait; }
   </style>
 </head>
 <body>
-  <h1>Hello World</h1>
+  <main>
+    <header>
+      <h1>agiq</h1>
+      <p class="note">La primera respuesta puede tardar cerca de un minuto porque el servidor gratuito se duerme. Cada mensaje se responde por separado.</p>
+    </header>
+    <div id="log" aria-live="polite"></div>
+    <form id="chat">
+      <label for="text" class="sr">Mensaje</label>
+      <textarea id="text" name="text" rows="2" required placeholder="Escribe un mensaje"></textarea>
+      <button type="submit">Enviar</button>
+    </form>
+  </main>
+  <script>
+    const AGENT_URL = "https://agent.agiq.top/";
+    const log = document.getElementById("log");
+    const form = document.getElementById("chat");
+    const text = document.getElementById("text");
+    const button = form.querySelector("button");
+
+    function add(kind, content) {
+      const el = document.createElement("p");
+      el.className = "msg " + kind;
+      el.textContent = content;
+      log.appendChild(el);
+      el.scrollIntoView({ block: "nearest" });
+      return el;
+    }
+
+    function partsText(parts) {
+      if (!Array.isArray(parts)) return "";
+      return parts
+        .map((part) => (part && typeof part.text === "string" ? part.text : ""))
+        .filter(Boolean)
+        .join("\n");
+    }
+
+    function replyFrom(result) {
+      if (!result || typeof result !== "object") return "";
+      const task = result.task || (result.status || result.artifacts ? result : null);
+      if (task) {
+        const state = task.status && task.status.state;
+        if (state && state !== "completed") {
+          return partsText(task.status.message && task.status.message.parts) || ("Estado: " + state);
+        }
+        const artifacts = task.artifacts || [];
+        for (let i = artifacts.length - 1; i >= 0; i--) {
+          const found = partsText(artifacts[i].parts);
+          if (found) return found;
+        }
+        const statusText = partsText(task.status && task.status.message && task.status.message.parts);
+        if (statusText) return statusText;
+      }
+      const message = result.message || (Array.isArray(result.parts) ? result : null);
+      return message ? partsText(message.parts) : "";
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const message = text.value.trim();
+      if (!message) return;
+      text.value = "";
+      add("user", message);
+      button.disabled = true;
+      const pending = add("agent", "Pensando… si el servidor estaba dormido, esto puede tardar cerca de un minuto.");
+      try {
+        const response = await fetch(AGENT_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: crypto.randomUUID(),
+            method: "message/send",
+            params: {
+              message: {
+                role: "user",
+                messageId: crypto.randomUUID(),
+                parts: [{ kind: "text", text: message }]
+              }
+            }
+          })
+        });
+        const data = await response.json();
+        pending.remove();
+        if (data.error) {
+          add("error", data.error.message || "Error del agente");
+          return;
+        }
+        const reply = replyFrom(data.result);
+        const failed = data.result && data.result.status && data.result.status.state && data.result.status.state !== "completed";
+        add(failed || !reply ? "error" : "agent", reply || "El agente no devolvió texto.");
+      } catch (err) {
+        pending.remove();
+        add("error", "No se pudo contactar al agente. Si acaba de despertar, inténtalo otra vez.");
+      } finally {
+        button.disabled = false;
+        text.focus();
+      }
+    });
+  </script>
 </body>
 </html>
