@@ -1,20 +1,185 @@
 {
-  "agent_name": "agiq",
-  "label": "AGIQ",
-  "description": "General-purpose conversational agent (Spanish/English) built with LangGraph and OpenAI gpt-4o-mini, reachable over A2A 0.3.0 JSON-RPC.",
-  "version": "0.1.0",
-  "provider": { "name": "MABC80", "url": "https://agiq.top" },
+  "agent_name": "AGIQ Books",
+  "label": "AGIQ Books",
+  "description": "Agent-to-agent bookstore for the Publishers Weekly / Circana BookScan top 10 print bestsellers of the first half of 2026. Structured A2A DataPart actions do not call a model. English text uses LangGraph and gpt-4o-mini. Payments are a sandbox. The same tools are MCP streamable HTTP.",
+  "version": "0.2.0",
+  "provider": {
+    "name": "MABC80",
+    "url": "https://agiq.top"
+  },
   "endpoints": {
     "a2a": "https://agent.agiq.top",
-    "agent_card": "https://agent.agiq.top/.well-known/agent-card.json"
+    "agent_card": "https://agent.agiq.top/.well-known/agent-card.json",
+    "mcp": "https://agent.agiq.top/mcp"
   },
   "skills": [
     {
-      "id": "chat",
-      "description": "General text conversation",
-      "inputModes": ["text/plain"],
-      "outputModes": ["text/plain"]
+      "id": "list_books",
+      "description": "List books",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ]
+    },
+    {
+      "id": "get_book",
+      "description": "Get book",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ]
+    },
+    {
+      "id": "search_books",
+      "description": "Search books",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ]
+    },
+    {
+      "id": "register_customer",
+      "description": "Register customer",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ]
+    },
+    {
+      "id": "get_customer",
+      "description": "Get customer",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ]
+    },
+    {
+      "id": "create_cart",
+      "description": "Create cart",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ]
+    },
+    {
+      "id": "add_to_cart",
+      "description": "Add to cart",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ]
+    },
+    {
+      "id": "view_cart",
+      "description": "View cart",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ]
+    },
+    {
+      "id": "checkout",
+      "description": "Checkout",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ]
+    },
+    {
+      "id": "pay",
+      "description": "Pay (sandbox)",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json",
+        "text/plain",
+        "application/xml",
+        "application/pdf"
+      ]
+    },
+    {
+      "id": "generate_invoice",
+      "description": "Generate invoice",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json",
+        "text/plain",
+        "application/xml",
+        "application/pdf"
+      ]
+    },
+    {
+      "id": "get_order_status",
+      "description": "Get order status",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json",
+        "text/plain",
+        "application/xml",
+        "application/pdf"
+      ]
+    },
+    {
+      "id": "notify_order",
+      "description": "Email order",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ]
     }
   ],
-  "capabilities": { "modalities": ["text"], "streaming": false }
+  "capabilities": {
+    "modalities": [
+      "text"
+    ],
+    "streaming": false
+  }
 }

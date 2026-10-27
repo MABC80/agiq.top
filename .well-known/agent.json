@@ -1,18 +1,32 @@
 {
   "capabilities": {
+    "extensions": [
+      {
+        "description": "Bookstore tools over MCP streamable HTTP. Same service and action rate limit as DataPart calls.",
+        "params": {
+          "transport": "streamable-http"
+        },
+        "required": false,
+        "uri": "https://agent.agiq.top/mcp"
+      }
+    ],
     "pushNotifications": false,
     "streaming": false
   },
   "defaultInputModes": [
+    "application/json",
     "text/plain"
   ],
   "defaultOutputModes": [
-    "text/plain"
+    "application/json",
+    "text/plain",
+    "application/xml",
+    "application/pdf"
   ],
-  "description": "Agente de conversación general de agiq.top.",
+  "description": "Agent-to-agent bookstore for the top 10 Circana BookScan print bestsellers of the first half of 2026 (Publishers Weekly, period ended July 4, 2026). Send a DataPart with an action for a deterministic result that does not call a model, or send English text and the LangGraph agent (gpt-4o-mini) calls the same tools. Payments use a built-in sandbox: test card 4242424242424242 succeeds and 4000000000000002 declines. The full card number is never stored. Set STRIPE_SECRET_KEY to use Stripe test mode instead. The same tools are MCP streamable HTTP at https://agent.agiq.top/mcp.",
   "documentationUrl": "https://agiq.top",
   "iconUrl": "https://agiq.top/icon.svg",
-  "name": "agiq",
+  "name": "AGIQ Books",
   "preferredTransport": "JSONRPC",
   "protocolVersion": "0.3.0",
   "provider": {
@@ -21,23 +35,285 @@
   },
   "skills": [
     {
-      "description": "Conversación general en texto.",
+      "description": "Return the 10-title catalog, simulated stock, and the selling price (the verified list price).\n\nInput JSON schema:\n{\"type\": \"object\", \"required\": [\"action\"], \"properties\": {\"action\": {\"const\": \"list_books\"}}}\n\nOutput JSON schema:\n{\"type\": \"object\", \"required\": [\"books\"], \"properties\": {\"books\": {\"type\": \"array\", \"items\": {\"$ref\": \"#/book\"}}}}\n\nSend this as an A2A DataPart for a deterministic result that does not call a model. A TextPart is handled by the language model, which calls the same tool. Every result also includes state and message.",
       "examples": [
-        "Hola, ¿qué puedes hacer?"
+        "{\"action\":\"list_books\"}",
+        "List the books you sell."
       ],
-      "id": "chat",
+      "id": "list_books",
       "inputModes": [
+        "application/json",
         "text/plain"
       ],
-      "name": "Conversación",
+      "name": "List books",
       "outputModes": [
+        "application/json",
         "text/plain"
       ],
       "tags": [
-        "chat"
+        "bookstore",
+        "list_books"
+      ]
+    },
+    {
+      "description": "Return one catalog record by ISBN-13 or by rank.\n\nInput JSON schema:\n{\"type\": \"object\", \"required\": [\"action\"], \"properties\": {\"action\": {\"const\": \"get_book\"}, \"isbn13\": {\"type\": \"string\"}, \"rank\": {\"type\": \"integer\"}}}\n\nOutput JSON schema:\n{\"type\": \"object\", \"required\": [\"book\"], \"properties\": {\"book\": {\"$ref\": \"#/book\"}}}\n\nSend this as an A2A DataPart for a deterministic result that does not call a model. A TextPart is handled by the language model, which calls the same tool. Every result also includes state and message.",
+      "examples": [
+        "{\"action\":\"get_book\",\"isbn13\":\"9781668236512\"}",
+        "Get the book ranked number 1."
+      ],
+      "id": "get_book",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "name": "Get book",
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "tags": [
+        "bookstore",
+        "get_book"
+      ]
+    },
+    {
+      "description": "Case-insensitive match on title or author.\n\nInput JSON schema:\n{\"type\": \"object\", \"required\": [\"action\", \"query\"], \"properties\": {\"action\": {\"const\": \"search_books\"}, \"query\": {\"type\": \"string\"}}}\n\nOutput JSON schema:\n{\"type\": \"object\", \"required\": [\"books\"], \"properties\": {\"books\": {\"type\": \"array\"}}}\n\nSend this as an A2A DataPart for a deterministic result that does not call a model. A TextPart is handled by the language model, which calls the same tool. Every result also includes state and message.",
+      "examples": [
+        "{\"action\":\"search_books\",\"query\":\"Weir\"}",
+        "Search for books by Weir."
+      ],
+      "id": "search_books",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "name": "Search books",
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "tags": [
+        "bookstore",
+        "search_books"
+      ]
+    },
+    {
+      "description": "Create a customer. Email must contain a name, a domain, and a dot. tax_id is optional and is not checked against a registry.\n\nInput JSON schema:\n{\"type\": \"object\", \"required\": [\"action\", \"name\", \"email\", \"billing\"], \"properties\": {\"action\": {\"const\": \"register_customer\"}, \"name\": {\"type\": \"string\"}, \"email\": {\"type\": \"string\"}, \"tax_id\": {\"type\": [\"string\", \"null\"]}, \"billing\": {\"type\": \"object\", \"required\": [\"line1\", \"city\", \"postal_code\", \"country\"], \"properties\": {\"line1\": {\"type\": \"string\"}, \"line2\": {\"type\": [\"string\", \"null\"]}, \"city\": {\"type\": \"string\"}, \"region\": {\"type\": [\"string\", \"null\"]}, \"postal_code\": {\"type\": \"string\"}, \"country\": {\"type\": \"string\"}}}}}\n\nOutput JSON schema:\n{\"type\": \"object\", \"required\": [\"customer\"], \"properties\": {\"customer\": {\"type\": \"object\"}}}\n\nSend this as an A2A DataPart for a deterministic result that does not call a model. A TextPart is handled by the language model, which calls the same tool. Every result also includes state and message.",
+      "examples": [
+        "{\"action\":\"register_customer\",\"name\":\"Ada Lovelace\",\"email\":\"ada@example.com\",\"billing\":{\"line1\":\"1 Analytical Engine\",\"city\":\"London\",\"postal_code\":\"W1\",\"country\":\"GB\"},\"tax_id\":null}",
+        "Register a customer named Ada Lovelace, email ada@example.com, billing 1 Analytical Engine, London, W1, GB."
+      ],
+      "id": "register_customer",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "name": "Register customer",
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "tags": [
+        "bookstore",
+        "register_customer"
+      ]
+    },
+    {
+      "description": "Look up a customer by customer_id or email.\n\nInput JSON schema:\n{\"type\": \"object\", \"required\": [\"action\"], \"properties\": {\"action\": {\"const\": \"get_customer\"}, \"customer_id\": {\"type\": \"string\"}, \"email\": {\"type\": \"string\"}}}\n\nOutput JSON schema:\n{\"type\": \"object\", \"required\": [\"customer\"], \"properties\": {\"customer\": {\"type\": \"object\"}}}\n\nSend this as an A2A DataPart for a deterministic result that does not call a model. A TextPart is handled by the language model, which calls the same tool. Every result also includes state and message.",
+      "examples": [
+        "{\"action\":\"get_customer\",\"email\":\"ada@example.com\"}",
+        "Look up the customer ada@example.com."
+      ],
+      "id": "get_customer",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "name": "Get customer",
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "tags": [
+        "bookstore",
+        "get_customer"
+      ]
+    },
+    {
+      "description": "Open a cart for a customer. The A2A contextId is stored when the caller omits context_id.\n\nInput JSON schema:\n{\"type\": \"object\", \"required\": [\"action\", \"customer_id\"], \"properties\": {\"action\": {\"const\": \"create_cart\"}, \"customer_id\": {\"type\": \"string\"}, \"context_id\": {\"type\": \"string\"}}}\n\nOutput JSON schema:\n{\"type\": \"object\", \"required\": [\"cart\"], \"properties\": {\"cart\": {\"type\": \"object\"}}}\n\nSend this as an A2A DataPart for a deterministic result that does not call a model. A TextPart is handled by the language model, which calls the same tool. Every result also includes state and message.",
+      "examples": [
+        "{\"action\":\"create_cart\",\"customer_id\":\"CUSTOMER_ID\"}",
+        "Create a cart for that customer."
+      ],
+      "id": "create_cart",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "name": "Create cart",
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "tags": [
+        "bookstore",
+        "create_cart"
+      ]
+    },
+    {
+      "description": "Add a priced title. A title with a null list price is not for sale. cart_id may be omitted when the A2A contextId already has an open cart.\n\nInput JSON schema:\n{\"type\": \"object\", \"required\": [\"action\"], \"properties\": {\"action\": {\"const\": \"add_to_cart\"}, \"cart_id\": {\"type\": \"string\"}, \"context_id\": {\"type\": \"string\"}, \"isbn13\": {\"type\": \"string\"}, \"rank\": {\"type\": \"integer\"}, \"quantity\": {\"type\": \"integer\"}}}\n\nOutput JSON schema:\n{\"type\": \"object\", \"required\": [\"cart\"], \"properties\": {\"cart\": {\"type\": \"object\"}}}\n\nSend this as an A2A DataPart for a deterministic result that does not call a model. A TextPart is handled by the language model, which calls the same tool. Every result also includes state and message.",
+      "examples": [
+        "{\"action\":\"add_to_cart\",\"cart_id\":\"CART_ID\",\"isbn13\":\"9781668236512\",\"quantity\":1}",
+        "Add one copy of Theo of Golden to the cart."
+      ],
+      "id": "add_to_cart",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "name": "Add to cart",
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "tags": [
+        "bookstore",
+        "add_to_cart"
+      ]
+    },
+    {
+      "description": "Return the open cart and line totals.\n\nInput JSON schema:\n{\"type\": \"object\", \"required\": [\"action\"], \"properties\": {\"action\": {\"const\": \"view_cart\"}, \"cart_id\": {\"type\": \"string\"}, \"context_id\": {\"type\": \"string\"}}}\n\nOutput JSON schema:\n{\"type\": \"object\", \"required\": [\"cart\"], \"properties\": {\"cart\": {\"type\": \"object\"}}}\n\nSend this as an A2A DataPart for a deterministic result that does not call a model. A TextPart is handled by the language model, which calls the same tool. Every result also includes state and message.",
+      "examples": [
+        "{\"action\":\"view_cart\",\"cart_id\":\"CART_ID\"}",
+        "Show the cart."
+      ],
+      "id": "view_cart",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "name": "View cart",
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "tags": [
+        "bookstore",
+        "view_cart"
+      ]
+    },
+    {
+      "description": "Turn the cart into an order awaiting sandbox payment. Tax is a simulated 8 percent of the merchandise subtotal. Shipping is a flat 5.00 USD. Neither figure comes from the bestseller list. Simulated stock is reserved.\n\nInput JSON schema:\n{\"type\": \"object\", \"required\": [\"action\"], \"properties\": {\"action\": {\"const\": \"checkout\"}, \"cart_id\": {\"type\": \"string\"}, \"context_id\": {\"type\": \"string\"}}}\n\nOutput JSON schema:\n{\"type\": \"object\", \"required\": [\"order\"], \"properties\": {\"order\": {\"type\": \"object\"}}}\n\nSend this as an A2A DataPart for a deterministic result that does not call a model. A TextPart is handled by the language model, which calls the same tool. Every result also includes state and message.",
+      "examples": [
+        "{\"action\":\"checkout\",\"cart_id\":\"CART_ID\"}",
+        "Check out the cart."
+      ],
+      "id": "checkout",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "name": "Checkout",
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "tags": [
+        "bookstore",
+        "checkout"
+      ]
+    },
+    {
+      "description": "SANDBOX payment simulator, not a live charge. 4242424242424242 succeeds (Visa). 4000000000000002 declines. The full card number is never stored or returned; only brand and last4. Set STRIPE_SECRET_KEY to send the same call to Stripe test mode instead. A successful sandbox charge creates the invoice and attempts the confirmation email.\n\nInput JSON schema:\n{\"type\": \"object\", \"required\": [\"action\", \"order_id\", \"card_number\"], \"properties\": {\"action\": {\"const\": \"pay\"}, \"order_id\": {\"type\": \"string\"}, \"card_number\": {\"type\": \"string\"}, \"exp_month\": {\"type\": \"integer\"}, \"exp_year\": {\"type\": \"integer\"}, \"cvc\": {\"type\": \"string\"}}}\n\nOutput JSON schema:\n{\"type\": \"object\", \"required\": [\"order\", \"payment\"], \"properties\": {\"order\": {\"type\": \"object\"}, \"payment\": {\"type\": \"object\"}, \"invoice\": {\"type\": \"object\"}, \"notification\": {\"type\": \"object\"}}}\n\nSend this as an A2A DataPart for a deterministic result that does not call a model. A TextPart is handled by the language model, which calls the same tool. Every result also includes state and message.",
+      "examples": [
+        "{\"action\":\"pay\",\"order_id\":\"ORDER_ID\",\"card_number\":\"4242424242424242\",\"exp_month\":12,\"exp_year\":2034,\"cvc\":\"123\"}",
+        "Pay the order with the sandbox card 4242424242424242."
+      ],
+      "id": "pay",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "name": "Pay (sandbox)",
+      "outputModes": [
+        "application/json",
+        "text/plain",
+        "application/xml",
+        "application/pdf"
+      ],
+      "tags": [
+        "bookstore",
+        "pay"
+      ]
+    },
+    {
+      "description": "Build a sequential UBL 2.1 / EN 16931-style XML invoice and a PDF for a paid order. The same invoice is returned if it already exists. Download URLs require an unguessable token.\n\nInput JSON schema:\n{\"type\": \"object\", \"required\": [\"action\", \"order_id\"], \"properties\": {\"action\": {\"const\": \"generate_invoice\"}, \"order_id\": {\"type\": \"string\"}}}\n\nOutput JSON schema:\n{\"type\": \"object\", \"required\": [\"invoice\"], \"properties\": {\"invoice\": {\"type\": \"object\"}}}\n\nSend this as an A2A DataPart for a deterministic result that does not call a model. A TextPart is handled by the language model, which calls the same tool. Every result also includes state and message.",
+      "examples": [
+        "{\"action\":\"generate_invoice\",\"order_id\":\"ORDER_ID\"}",
+        "Generate the invoice for the order."
+      ],
+      "id": "generate_invoice",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "name": "Generate invoice",
+      "outputModes": [
+        "application/json",
+        "text/plain",
+        "application/xml",
+        "application/pdf"
+      ],
+      "tags": [
+        "bookstore",
+        "generate_invoice"
+      ]
+    },
+    {
+      "description": "Return the order, payment (last4 and brand only), invoice links, and email status.\n\nInput JSON schema:\n{\"type\": \"object\", \"required\": [\"action\", \"order_id\"], \"properties\": {\"action\": {\"const\": \"get_order_status\"}, \"order_id\": {\"type\": \"string\"}}}\n\nOutput JSON schema:\n{\"type\": \"object\", \"required\": [\"order\"], \"properties\": {\"order\": {\"type\": \"object\"}}}\n\nSend this as an A2A DataPart for a deterministic result that does not call a model. A TextPart is handled by the language model, which calls the same tool. Every result also includes state and message.",
+      "examples": [
+        "{\"action\":\"get_order_status\",\"order_id\":\"ORDER_ID\"}",
+        "What is the status of the order?"
+      ],
+      "id": "get_order_status",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "name": "Get order status",
+      "outputModes": [
+        "application/json",
+        "text/plain",
+        "application/xml",
+        "application/pdf"
+      ],
+      "tags": [
+        "bookstore",
+        "get_order_status"
+      ]
+    },
+    {
+      "description": "Send the order confirmation and the invoice to the customer. If neither Resend nor SMTP is configured, the action still succeeds and the status is exactly \"not_sent: email provider not configured\". Pay already attempts this once.\n\nInput JSON schema:\n{\"type\": \"object\", \"required\": [\"action\", \"order_id\"], \"properties\": {\"action\": {\"const\": \"notify_order\"}, \"order_id\": {\"type\": \"string\"}}}\n\nOutput JSON schema:\n{\"type\": \"object\", \"required\": [\"notification\"], \"properties\": {\"notification\": {\"type\": \"object\"}}}\n\nSend this as an A2A DataPart for a deterministic result that does not call a model. A TextPart is handled by the language model, which calls the same tool. Every result also includes state and message.",
+      "examples": [
+        "{\"action\":\"notify_order\",\"order_id\":\"ORDER_ID\"}",
+        "Email the invoice to the customer."
+      ],
+      "id": "notify_order",
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "name": "Email order",
+      "outputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "tags": [
+        "bookstore",
+        "notify_order"
       ]
     }
   ],
   "url": "https://agent.agiq.top",
-  "version": "0.1.0"
+  "version": "0.2.0"
 }
