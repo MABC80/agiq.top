@@ -1,5 +1,6 @@
 """Minimal A2A agent: LangGraph + OpenAI, JSON-RPC message/send."""
 
+import json
 import os
 from collections.abc import Sequence
 
@@ -11,6 +12,7 @@ from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
 from a2a.types import (
     AgentCapabilities,
     AgentCard,
+    AgentProvider,
     AgentSkill,
     InvalidParamsError,
     Part,
@@ -24,18 +26,23 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
-from starlette.middleware import Middleware
-from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
+
+from quota import LIMITED_METHODS, MessageQuota, message_for, rpc_error
 
 DEFAULT_PUBLIC_URL = "https://agent.agiq.top"
 DEFAULT_MODEL = "gpt-4o-mini"
+DOCS_URL = "https://agiq.top"
+ICON_URL = "https://agiq.top/icon.svg"
+CARD_PATHS = frozenset({
+    "/.well-known/agent-card.json",
+    "/.well-known/agent.json",
+})
 SYSTEM_PROMPT = (
     "Eres un asistente breve y útil. Responde en el idioma del usuario."
 )
-ALLOWED_ORIGINS = ["https://agiq.top", "https://www.agiq.top"]
 
 
 class FakeChatModel(BaseChatModel):
@@ -140,6 +147,9 @@ def build_agent_card() -> AgentCard:
         description="Agente de conversación general de agiq.top.",
         url=public_url(),
         version="0.1.0",
+        documentation_url=DOCS_URL,
+        icon_url=ICON_URL,
+        provider=AgentProvider(organization="MABC80", url=DOCS_URL),
         protocol_version="0.3.0",
         preferred_transport="JSONRPC",
         capabilities=AgentCapabilities(streaming=False, push_notifications=False),
@@ -159,6 +169,11 @@ def build_agent_card() -> AgentCard:
     )
 
 
+def card_dict() -> dict:
+    """Same object the JSON-RPC server returns for the agent card."""
+    return build_agent_card().model_dump(exclude_none=True, by_alias=True)
+
+
 async def health(_: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
@@ -171,22 +186,124 @@ class Application(A2AStarletteApplication):
         ]
 
 
-def create_app():
+def client_ip(scope) -> str:
+    headers = {
+        key.decode("latin-1").lower(): value.decode("latin-1")
+        for key, value in scope.get("headers") or []
+    }
+    forwarded = headers.get("x-forwarded-for", "")
+    if forwarded.strip():
+        return forwarded.split(",")[0].strip() or "unknown"
+    client = scope.get("client")
+    if client and client[0]:
+        return client[0]
+    return "unknown"
+
+
+def classify_body(body: bytes) -> tuple[str, str | int | None]:
+    """Return ('limited'|'other'|'plain', json-rpc id)."""
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return "plain", None
+    if not isinstance(payload, dict) or "method" not in payload:
+        return "plain", None
+    request_id = payload.get("id")
+    if not isinstance(request_id, str | int):
+        request_id = None
+    if payload.get("method") in LIMITED_METHODS:
+        return "limited", request_id
+    return "other", request_id
+
+
+class QuotaMiddleware:
+    """Count message/send and message/stream. Leave discovery and health alone."""
+
+    def __init__(self, app, quota: MessageQuota) -> None:
+        self.app = app
+        self.quota = quota
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") != "POST" or scope.get("path") != "/":
+            await self.app(scope, receive, send)
+            return
+
+        chunks = []
+        body = b""
+        while True:
+            message = await receive()
+            chunks.append(message)
+            if message["type"] != "http.request":
+                break
+            body += message.get("body", b"")
+            if not message.get("more_body", False):
+                break
+
+        async def replay():
+            if chunks:
+                return chunks.pop(0)
+            return {"type": "http.disconnect"}
+
+        kind, request_id = classify_body(body)
+        ip = client_ip(scope)
+        if kind == "limited":
+            reason = self.quota.consume(ip)
+            if reason:
+                response = JSONResponse(rpc_error(request_id, reason))
+                await response(scope, replay, send)
+                return
+        elif kind == "plain":
+            reason = self.quota.reason(ip)
+            if reason:
+                response = JSONResponse(
+                    {"error": message_for(reason)},
+                    status_code=429,
+                )
+                await response(scope, replay, send)
+                return
+        await self.app(scope, replay, send)
+
+
+class CardCorsMiddleware:
+    """Allow any origin to read the agent card. Do not open POST from browsers."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("path") not in CARD_PATHS:
+            await self.app(scope, receive, send)
+            return
+        if scope.get("method") == "OPTIONS":
+            response = Response(
+                status_code=204,
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+                    "Access-Control-Max-Age": "600",
+                },
+            )
+            await response(scope, receive, send)
+            return
+
+        async def send_with_cors(message):
+            if message["type"] == "http.response.start" and scope.get("method") in {"GET", "HEAD"}:
+                headers = list(message.get("headers") or [])
+                headers.append((b"access-control-allow-origin", b"*"))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_cors)
+
+
+def create_app(quota: MessageQuota | None = None):
     handler = DefaultRequestHandler(
         agent_executor=ChatExecutor(build_graph()),
         task_store=InMemoryTaskStore(),
     )
     server = Application(agent_card=build_agent_card(), http_handler=handler)
-    return server.build(
-        middleware=[
-            Middleware(
-                CORSMiddleware,
-                allow_origins=ALLOWED_ORIGINS,
-                allow_methods=["GET", "POST", "OPTIONS"],
-                allow_headers=["*"],
-            )
-        ]
-    )
+    app = QuotaMiddleware(server.build(), quota or MessageQuota.from_env())
+    return CardCorsMiddleware(app)
 
 
 app = create_app()
