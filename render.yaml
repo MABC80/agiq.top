@@ -16,3 +16,5 @@ services:
         value: gpt-4o-mini
       - key: PUBLIC_URL
         value: https://agent.agiq.top
+      - key: MAX_DAILY_MESSAGES
+        value: "30"

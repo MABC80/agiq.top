@@ -1,0 +1,43 @@
+{
+  "capabilities": {
+    "pushNotifications": false,
+    "streaming": false
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "Agente de conversación general de agiq.top.",
+  "documentationUrl": "https://agiq.top",
+  "iconUrl": "https://agiq.top/icon.svg",
+  "name": "agiq",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.3.0",
+  "provider": {
+    "organization": "MABC80",
+    "url": "https://agiq.top"
+  },
+  "skills": [
+    {
+      "description": "Conversación general en texto.",
+      "examples": [
+        "Hola, ¿qué puedes hacer?"
+      ],
+      "id": "chat",
+      "inputModes": [
+        "text/plain"
+      ],
+      "name": "Conversación",
+      "outputModes": [
+        "text/plain"
+      ],
+      "tags": [
+        "chat"
+      ]
+    }
+  ],
+  "url": "https://agent.agiq.top",
+  "version": "0.1.0"
+}

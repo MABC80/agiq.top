@@ -1,0 +1,20 @@
+{
+  "agent_name": "agiq",
+  "label": "AGIQ",
+  "description": "General-purpose conversational agent (Spanish/English) built with LangGraph and OpenAI gpt-4o-mini, reachable over A2A 0.3.0 JSON-RPC.",
+  "version": "0.1.0",
+  "provider": { "name": "MABC80", "url": "https://agiq.top" },
+  "endpoints": {
+    "a2a": "https://agent.agiq.top",
+    "agent_card": "https://agent.agiq.top/.well-known/agent-card.json"
+  },
+  "skills": [
+    {
+      "id": "chat",
+      "description": "General text conversation",
+      "inputModes": ["text/plain"],
+      "outputModes": ["text/plain"]
+    }
+  ],
+  "capabilities": { "modalities": ["text"], "streaming": false }
+}
