@@ -1,0 +1,247 @@
+{
+  "list": {
+    "name": "Publishers Weekly / Circana BookScan first-half top 10 print bestsellers",
+    "url": "https://www.publishersweekly.com/pw/by-topic/industry-news/financial-reporting/article/100790-print-book-sales-flat-in-first-half-of-2026.html",
+    "as_of": "2026-07-04",
+    "article_date": "2026-07-09",
+    "note": "Print-unit ranks for the period ended July 4, 2026. This is a first-half list, not a full-year 2026 ranking. Edition fields that are null were not verified and were left empty on purpose."
+  },
+  "books": [
+    {
+      "rank": 1,
+      "title": "Theo of Golden",
+      "authors": ["Allen Levi"],
+      "isbn13": "9781668236512",
+      "publisher": "Atria Books",
+      "publication_date": null,
+      "pages": null,
+      "format": "paperback",
+      "language": null,
+      "genre": null,
+      "synopsis": "A novel about a newcomer who gives small gifts to people in a city and watches those gifts pull their lives together.",
+      "list_price_usd": "20.00",
+      "source": {
+        "list": "Publishers Weekly / Circana BookScan first-half top 10",
+        "url": "https://www.publishersweekly.com/pw/by-topic/industry-news/financial-reporting/article/100790-print-book-sales-flat-in-first-half-of-2026.html",
+        "as_of": "2026-07-04",
+        "article_date": "2026-07-09",
+        "units": 1197952,
+        "edition_urls": ["https://www.bookweb.org/indie-bestseller-lists/may-13-2026"]
+      }
+    },
+    {
+      "rank": 2,
+      "title": "Project Hail Mary",
+      "authors": ["Andy Weir"],
+      "isbn13": "9798217299461",
+      "publisher": "Ballantine Books",
+      "publication_date": "2025-12-02",
+      "pages": null,
+      "format": "paperback",
+      "language": null,
+      "genre": "science fiction",
+      "synopsis": "Science fiction about an astronaut who wakes alone on a ship and has to reconstruct a mission to save Earth.",
+      "list_price_usd": "22.00",
+      "source": {
+        "list": "Publishers Weekly / Circana BookScan first-half top 10",
+        "url": "https://www.publishersweekly.com/pw/by-topic/industry-news/financial-reporting/article/100790-print-book-sales-flat-in-first-half-of-2026.html",
+        "as_of": "2026-07-04",
+        "article_date": "2026-07-09",
+        "units": 829089,
+        "edition_urls": [
+          "https://www.bookweb.org/indie-bestseller-lists/may-13-2026",
+          "https://www.penguinrandomhouseretail.com/book/?isbn=9780593135204"
+        ],
+        "edition_note": "The 2026 paperback sellers list identifies the movie tie-in edition. Page count for that ISBN was not verified and is null."
+      }
+    },
+    {
+      "rank": 3,
+      "title": "The Let Them Theory",
+      "authors": ["Mel Robbins", "Sawyer Robbins"],
+      "isbn13": "9781401971366",
+      "publisher": "Hay House LLC",
+      "publication_date": "2024-12-24",
+      "pages": 336,
+      "format": "hardcover",
+      "language": "en",
+      "genre": "self-help",
+      "synopsis": "A self-help book about spending energy on what you can control instead of managing other people.",
+      "list_price_usd": "29.99",
+      "source": {
+        "list": "Publishers Weekly / Circana BookScan first-half top 10",
+        "url": "https://www.publishersweekly.com/pw/by-topic/industry-news/financial-reporting/article/100790-print-book-sales-flat-in-first-half-of-2026.html",
+        "as_of": "2026-07-04",
+        "article_date": "2026-07-09",
+        "units": 566244,
+        "edition_urls": [
+          "https://shop.hayhouse.com/products/the-let-them-theory",
+          "https://www.penguinrandomhouse.com/books/743134/the-let-them-theory-by-mel-robbins/"
+        ],
+        "edition_note": "The ranked line credits Mel Robbins. This ISBN also lists Sawyer Robbins as coauthor."
+      }
+    },
+    {
+      "rank": 4,
+      "title": "The Correspondent",
+      "authors": ["Virginia Evans"],
+      "isbn13": "9780593798430",
+      "publisher": "Crown",
+      "publication_date": null,
+      "pages": null,
+      "format": "hardcover",
+      "language": null,
+      "genre": null,
+      "synopsis": "A novel. No plot summary is stored, so none is paraphrased from a review.",
+      "list_price_usd": "28.00",
+      "source": {
+        "list": "Publishers Weekly / Circana BookScan first-half top 10",
+        "url": "https://www.publishersweekly.com/pw/by-topic/industry-news/financial-reporting/article/100790-print-book-sales-flat-in-first-half-of-2026.html",
+        "as_of": "2026-07-04",
+        "article_date": "2026-07-09",
+        "units": 503119,
+        "edition_urls": ["https://www.bookweb.org/indie-bestseller-lists/june-3-2026"]
+      }
+    },
+    {
+      "rank": 5,
+      "title": "Oh, the Places You'll Go!",
+      "authors": ["Dr. Seuss"],
+      "isbn13": null,
+      "publisher": "Random House",
+      "publication_date": null,
+      "pages": null,
+      "format": null,
+      "language": null,
+      "genre": null,
+      "synopsis": "A picture book that sends the reader off to choose a path and keep going.",
+      "list_price_usd": null,
+      "source": {
+        "list": "Publishers Weekly / Circana BookScan first-half top 10",
+        "url": "https://www.publishersweekly.com/pw/by-topic/industry-news/financial-reporting/article/100790-print-book-sales-flat-in-first-half-of-2026.html",
+        "as_of": "2026-07-04",
+        "article_date": "2026-07-09",
+        "units": 481967,
+        "edition_urls": [],
+        "edition_note": "The ranked line names the title, author, and imprint only. ISBN, pages, format, date, and price were not verified for a specific edition."
+      }
+    },
+    {
+      "rank": 6,
+      "title": "Dear Debbie",
+      "authors": ["Freida McFadden"],
+      "isbn13": "9781464249624",
+      "publisher": "Poisoned Pen Press",
+      "publication_date": "2026-01-27",
+      "pages": 336,
+      "format": "paperback",
+      "language": "en",
+      "genre": "Mystery/Thriller",
+      "synopsis": "A thriller about an advice columnist who stops offering careful counsel and starts settling scores.",
+      "list_price_usd": "17.99",
+      "source": {
+        "list": "Publishers Weekly / Circana BookScan first-half top 10",
+        "url": "https://www.publishersweekly.com/pw/by-topic/industry-news/financial-reporting/article/100790-print-book-sales-flat-in-first-half-of-2026.html",
+        "as_of": "2026-07-04",
+        "article_date": "2026-07-09",
+        "units": 463647,
+        "edition_urls": [
+          "https://www.sourcebooks.com/dear-debbie.html",
+          "https://www.publishersweekly.com/9781464249624",
+          "https://www.amazon.com/Dear-Debbie-Freida-McFadden/dp/1464249628"
+        ],
+        "edition_note": "The ranked table prints the imprint Poisoned Pen. The publisher site lists that imprint under Sourcebooks."
+      }
+    },
+    {
+      "rank": 7,
+      "title": "Dungeon Crawler Carl",
+      "authors": ["Matt Dinniman"],
+      "isbn13": "9780593820254",
+      "publisher": "Ace",
+      "publication_date": null,
+      "pages": null,
+      "format": "paperback",
+      "language": null,
+      "genre": null,
+      "synopsis": "The first novel in a series about a man and his cat forced into a dungeon that is also a game show.",
+      "list_price_usd": "20.00",
+      "source": {
+        "list": "Publishers Weekly / Circana BookScan first-half top 10",
+        "url": "https://www.publishersweekly.com/pw/by-topic/industry-news/financial-reporting/article/100790-print-book-sales-flat-in-first-half-of-2026.html",
+        "as_of": "2026-07-04",
+        "article_date": "2026-07-09",
+        "units": 446460,
+        "edition_urls": ["https://www.bookweb.org/indie-bestseller-lists/may-13-2026"]
+      }
+    },
+    {
+      "rank": 8,
+      "title": "Yesteryear",
+      "authors": ["Caro Claire Burke"],
+      "isbn13": "9780593804216",
+      "publisher": "Knopf",
+      "publication_date": null,
+      "pages": null,
+      "format": "hardcover",
+      "language": null,
+      "genre": null,
+      "synopsis": "A novel. No plot summary is stored, so none is paraphrased from a review.",
+      "list_price_usd": "30.00",
+      "source": {
+        "list": "Publishers Weekly / Circana BookScan first-half top 10",
+        "url": "https://www.publishersweekly.com/pw/by-topic/industry-news/financial-reporting/article/100790-print-book-sales-flat-in-first-half-of-2026.html",
+        "as_of": "2026-07-04",
+        "article_date": "2026-07-09",
+        "units": 402152,
+        "edition_urls": ["https://www.bookweb.org/indie-bestseller-lists/june-3-2026"]
+      }
+    },
+    {
+      "rank": 9,
+      "title": "Heated Rivalry",
+      "authors": ["Rachel Reid"],
+      "isbn13": "9781335534637",
+      "publisher": "Carina Press",
+      "publication_date": null,
+      "pages": null,
+      "format": "paperback",
+      "language": null,
+      "genre": "romance",
+      "synopsis": "A romance about two professional hockey players who treat each other as rivals.",
+      "list_price_usd": "18.99",
+      "source": {
+        "list": "Publishers Weekly / Circana BookScan first-half top 10",
+        "url": "https://www.publishersweekly.com/pw/by-topic/industry-news/financial-reporting/article/100790-print-book-sales-flat-in-first-half-of-2026.html",
+        "as_of": "2026-07-04",
+        "article_date": "2026-07-09",
+        "units": 384004,
+        "edition_urls": ["https://www.bookweb.org/indie-bestseller-lists/may-13-2026"],
+        "edition_note": "The ranked line prints the imprint Carina. The edition line names Carina Press."
+      }
+    },
+    {
+      "rank": 10,
+      "title": "The Housemaid",
+      "authors": ["Freida McFadden"],
+      "isbn13": null,
+      "publisher": "Grand Central",
+      "publication_date": null,
+      "pages": null,
+      "format": null,
+      "language": null,
+      "genre": null,
+      "synopsis": "A thriller about a live-in housekeeper who learns the household is dangerous.",
+      "list_price_usd": null,
+      "source": {
+        "list": "Publishers Weekly / Circana BookScan first-half top 10",
+        "url": "https://www.publishersweekly.com/pw/by-topic/industry-news/financial-reporting/article/100790-print-book-sales-flat-in-first-half-of-2026.html",
+        "as_of": "2026-07-04",
+        "article_date": "2026-07-09",
+        "units": 354188,
+        "edition_urls": [],
+        "edition_note": "The ranked line names the title, author, and imprint only. ISBN, pages, format, date, and price were not verified for a specific edition."
+      }
+    }
+  ]
+}

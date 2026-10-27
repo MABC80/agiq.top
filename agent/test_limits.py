@@ -78,7 +78,7 @@ class ServerLimitTests(unittest.TestCase):
         third = send(client, request_id="c")
         self.assertEqual(first.status_code, 200)
         self.assertEqual(first.json()["result"]["status"]["state"], "completed")
-        self.assertEqual(second.json()["result"]["artifacts"][0]["parts"][0]["text"], "eco: Hola")
+        self.assertEqual(second.json()["result"]["artifacts"][0]["parts"][0]["text"], "echo: Hola")
         self.assertEqual(third.status_code, 200)
         self.assertEqual(third.json()["error"]["code"], RATE_LIMIT_CODE)
         self.assertEqual(third.json()["error"]["message"], DAILY_MESSAGE)
@@ -146,6 +146,8 @@ class ServerLimitTests(unittest.TestCase):
         self.assertEqual(card["provider"], {"organization": "MABC80", "url": "https://agiq.top"})
         self.assertEqual(card["documentationUrl"], "https://agiq.top")
         self.assertEqual(card["iconUrl"], "https://agiq.top/icon.svg")
+        self.assertEqual(card["name"], "AGIQ Books")
+        self.assertEqual(card["version"], "0.2.0")
         facts = json.loads((ROOT / "agentfacts.json").read_text())
         self.assertEqual(facts["agent_name"], card["name"])
         self.assertEqual(facts["version"], card["version"])
@@ -161,7 +163,8 @@ class ServerLimitTests(unittest.TestCase):
         self.assertEqual(facts["skills"][0]["outputModes"], card["skills"][0]["outputModes"])
         self.assertTrue((ROOT / ".nojekyll").is_file())
         page = (ROOT / "index.html").read_text()
-        self.assertIn("AGIQ — Agente A2A", page)
+        self.assertIn("AGIQ Books", page)
+        self.assertNotIn("<form", page.lower())
         self.assertIn("https://agent.agiq.top/.well-known/agent-card.json", page)
         self.assertIn("https://agiq.top/.well-known/agent-card.json", page)
         self.assertNotIn("message/send", page)
@@ -169,6 +172,10 @@ class ServerLimitTests(unittest.TestCase):
         blueprint = (ROOT / "render.yaml").read_text()
         self.assertIn("MAX_DAILY_MESSAGES", blueprint)
         self.assertIn('value: "30"', blueprint)
+        self.assertIn("MAX_DAILY_ACTIONS", blueprint)
+        self.assertIn('value: "1000"', blueprint)
+        for key in ("RESEND_API_KEY", "EMAIL_FROM", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD"):
+            self.assertIn(key, blueprint)
 
 
 if __name__ == "__main__":

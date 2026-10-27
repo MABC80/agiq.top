@@ -18,3 +18,23 @@ services:
         value: https://agent.agiq.top
       - key: MAX_DAILY_MESSAGES
         value: "30"
+      - key: MAX_MESSAGES_PER_IP_PER_HOUR
+        value: "5"
+      - key: MAX_DAILY_ACTIONS
+        value: "1000"
+      - key: MAX_ACTIONS_PER_IP_PER_HOUR
+        value: "60"
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false

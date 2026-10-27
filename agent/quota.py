@@ -6,11 +6,17 @@ from datetime import datetime, timezone
 
 DAILY_LIMIT_ENV = "MAX_DAILY_MESSAGES"
 IP_LIMIT_ENV = "MAX_MESSAGES_PER_IP_PER_HOUR"
+ACTION_DAILY_ENV = "MAX_DAILY_ACTIONS"
+ACTION_IP_ENV = "MAX_ACTIONS_PER_IP_PER_HOUR"
 DEFAULT_DAILY_LIMIT = 30
 DEFAULT_IP_LIMIT = 5
+DEFAULT_ACTION_DAILY_LIMIT = 1000
+DEFAULT_ACTION_IP_LIMIT = 60
 RATE_LIMIT_CODE = -32029
-DAILY_MESSAGE = "Límite diario de mensajes alcanzado. Inténtalo mañana."
-IP_MESSAGE = "Demasiados mensajes desde esta dirección. Inténtalo dentro de una hora."
+DAILY_MESSAGE = "Daily message limit reached. Try again tomorrow."
+IP_MESSAGE = "Too many messages from this address. Try again in an hour."
+ACTION_DAILY_MESSAGE = "Daily action limit reached. Try again tomorrow."
+ACTION_IP_MESSAGE = "Too many actions from this address. Try again in an hour."
 LIMITED_METHODS = frozenset({"message/send", "message/stream"})
 
 
@@ -89,17 +95,29 @@ class MessageQuota:
         return None
 
 
-def message_for(reason: str) -> str:
-    if reason == "ip":
-        return IP_MESSAGE
-    return DAILY_MESSAGE
+class ActionQuota(MessageQuota):
+    """Separate cap for DataPart actions and MCP calls, which do not use the model."""
+
+    @classmethod
+    def from_env(cls, now=None) -> "ActionQuota":
+        return cls(
+            daily_limit=parse_limit(ACTION_DAILY_ENV, DEFAULT_ACTION_DAILY_LIMIT),
+            per_ip_per_hour=parse_limit(ACTION_IP_ENV, DEFAULT_ACTION_IP_LIMIT),
+            now=now,
+        )
 
 
-def rpc_error(request_id, reason: str) -> dict:
+def message_for(reason: str, kind: str = "message") -> str:
+    if kind == "action":
+        return ACTION_IP_MESSAGE if reason == "ip" else ACTION_DAILY_MESSAGE
+    return IP_MESSAGE if reason == "ip" else DAILY_MESSAGE
+
+
+def rpc_error(request_id, reason: str, kind: str = "message") -> dict:
     if not isinstance(request_id, str | int):
         request_id = None
     return {
         "jsonrpc": "2.0",
         "id": request_id,
-        "error": {"code": RATE_LIMIT_CODE, "message": message_for(reason)},
+        "error": {"code": RATE_LIMIT_CODE, "message": message_for(reason, kind)},
     }

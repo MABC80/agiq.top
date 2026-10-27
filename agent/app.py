@@ -1,8 +1,10 @@
-"""Minimal A2A agent: LangGraph + OpenAI, JSON-RPC message/send."""
+"""A2A bookstore: structured DataPart actions, or English text through LangGraph."""
 
+import base64
 import json
 import os
 from collections.abc import Sequence
+from contextlib import asynccontextmanager
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.apps import A2AStarletteApplication
@@ -12,8 +14,12 @@ from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
 from a2a.types import (
     AgentCapabilities,
     AgentCard,
+    AgentExtension,
     AgentProvider,
     AgentSkill,
+    DataPart,
+    FilePart,
+    FileWithBytes,
     InvalidParamsError,
     Part,
     TextPart,
@@ -30,7 +36,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from quota import LIMITED_METHODS, MessageQuota, message_for, rpc_error
+from actions import ACTIONS, skill_description
+from bookstore import Bookstore
+from quota import LIMITED_METHODS, ActionQuota, MessageQuota, message_for, rpc_error
+from tools import build_mcp, langchain_tools, make_functions
 
 DEFAULT_PUBLIC_URL = "https://agent.agiq.top"
 DEFAULT_MODEL = "gpt-4o-mini"
@@ -41,8 +50,12 @@ CARD_PATHS = frozenset({
     "/.well-known/agent.json",
 })
 SYSTEM_PROMPT = (
-    "Eres un asistente breve y útil. Responde en el idioma del usuario."
+    "You are AGIQ Books, an agent-to-agent bookstore. Use the bookstore tools for the catalog, "
+    "customers, carts, checkout, sandbox payment, invoices, and order email. Never invent books, "
+    "prices, or stock. Payments are a sandbox: pass a card number only to the pay tool and never "
+    "repeat the full number in your reply. Reply in English."
 )
+WORKING_ACTIONS = frozenset({"checkout", "pay", "generate_invoice", "notify_order"})
 
 
 class FakeChatModel(BaseChatModel):
@@ -67,7 +80,7 @@ class FakeChatModel(BaseChatModel):
             if isinstance(message, HumanMessage) and isinstance(message.content, str):
                 text = message.content.strip()
                 break
-        reply = AIMessage(content=f"eco: {text}")
+        reply = AIMessage(content=f"echo: {text}")
         return ChatResult(generations=[ChatGeneration(message=reply)])
 
 
@@ -90,8 +103,9 @@ def build_model() -> BaseChatModel:
     return ChatOpenAI(model=model_name())
 
 
-def build_graph():
-    return create_react_agent(build_model(), tools=[], prompt=SYSTEM_PROMPT)
+def build_graph(store: Bookstore):
+    functions = make_functions(store)
+    return create_react_agent(build_model(), tools=langchain_tools(functions), prompt=SYSTEM_PROMPT), functions
 
 
 def text_from_result(result: dict) -> str:
@@ -109,63 +123,134 @@ def text_from_result(result: dict) -> str:
     return str(content).strip()
 
 
-class ChatExecutor(AgentExecutor):
-    def __init__(self, graph) -> None:
+def structured_payload(message) -> dict | None:
+    if message is None:
+        return None
+    for part in message.parts:
+        root = part.root
+        if isinstance(root, DataPart) and isinstance(root.data, dict):
+            return root.data
+    return None
+
+
+class BookstoreExecutor(AgentExecutor):
+    def __init__(self, graph, store: Bookstore) -> None:
         self._graph = graph
+        self._store = store
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
-        user_text = context.get_user_input().strip()
-        if not user_text or context.message is None:
-            raise ServerError(InvalidParamsError(message="El mensaje no tiene texto."))
-
+        if context.message is None:
+            raise ServerError(InvalidParamsError(message="The message has no content."))
+        payload = structured_payload(context.message)
         task = context.current_task
         if task is None:
             task = new_task(context.message)
             await event_queue.enqueue_event(task)
-
         updater = TaskUpdater(event_queue, task.id, task.context_id)
+        if payload is not None:
+            await self._structured(payload, task, updater)
+            return
+        user_text = context.get_user_input().strip()
+        if not user_text:
+            raise ServerError(InvalidParamsError(message="The message has no text."))
         try:
             result = await self._graph.ainvoke({"messages": [("user", user_text)]})
-            reply = text_from_result(result) or "(sin respuesta)"
+            reply = text_from_result(result) or "(no reply)"
         except Exception as exc:
             detail = str(exc).splitlines()[0][:500]
-            await updater.failed(
-                new_agent_text_message(f"No pude responder: {detail}", task.context_id, task.id)
-            )
+            await updater.failed(new_agent_text_message(f"I could not answer: {detail}", task.context_id, task.id))
             return
-
-        await updater.add_artifact([Part(root=TextPart(text=reply))], name="respuesta")
+        await updater.add_artifact([Part(root=TextPart(text=reply))], name="reply")
         await updater.complete(new_agent_text_message(reply, task.context_id, task.id))
 
+    async def _structured(self, payload: dict, task, updater: TaskUpdater) -> None:
+        action = payload.get("action")
+        if isinstance(action, str) and action in WORKING_ACTIONS:
+            await updater.start_work(
+                new_agent_text_message(f"Working on {action}.", task.context_id, task.id)
+            )
+        outcome = self._store.handle(payload, context_id=task.context_id)
+        body = {"state": outcome.state, "message": outcome.message, **outcome.data}
+        parts = [Part(root=DataPart(data=body))]
+        for name, content, mime in outcome.files:
+            parts.append(
+                Part(
+                    root=FilePart(
+                        file=FileWithBytes(
+                            bytes=base64.b64encode(content).decode("ascii"),
+                            mime_type=mime,
+                            name=name,
+                        )
+                    )
+                )
+            )
+        message = new_agent_text_message(outcome.message, task.context_id, task.id)
+        if outcome.state == "completed":
+            await updater.add_artifact(parts, name="result")
+            await updater.complete(message)
+            return
+        if outcome.state == "input-required":
+            await updater.requires_input(message, final=True)
+            return
+        await updater.add_artifact(parts, name="result")
+        await updater.failed(message)
+
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
-        raise ServerError(UnsupportedOperationError(message="Cancelación no disponible."))
+        raise ServerError(UnsupportedOperationError(message="Cancellation is not available."))
 
 
 def build_agent_card() -> AgentCard:
+    base = public_url()
+    skills = []
+    for spec in ACTIONS:
+        output_modes = ["application/json", "text/plain"]
+        if spec["files"]:
+            output_modes.extend(["application/xml", "application/pdf"])
+        skills.append(
+            AgentSkill(
+                id=spec["id"],
+                name=spec["name"],
+                description=skill_description(spec),
+                tags=["bookstore", spec["id"]],
+                examples=[spec["example"], spec["utterance"]],
+                input_modes=["application/json", "text/plain"],
+                output_modes=output_modes,
+            )
+        )
     return AgentCard(
-        name="agiq",
-        description="Agente de conversación general de agiq.top.",
-        url=public_url(),
-        version="0.1.0",
+        name="AGIQ Books",
+        description=(
+            "Agent-to-agent bookstore for the top 10 Circana BookScan print bestsellers "
+            "of the first half of 2026 (Publishers Weekly, period ended July 4, 2026). "
+            "Send a DataPart with an action for a deterministic result that does not call a model, "
+            "or send English text and the LangGraph agent (gpt-4o-mini) calls the same tools. "
+            "Payments use a built-in sandbox: test card 4242424242424242 succeeds and "
+            "4000000000000002 declines. The full card number is never stored. "
+            "Set STRIPE_SECRET_KEY to use Stripe test mode instead. "
+            f"The same tools are MCP streamable HTTP at {base}/mcp."
+        ),
+        url=base,
+        version="0.2.0",
         documentation_url=DOCS_URL,
         icon_url=ICON_URL,
         provider=AgentProvider(organization="MABC80", url=DOCS_URL),
         protocol_version="0.3.0",
         preferred_transport="JSONRPC",
-        capabilities=AgentCapabilities(streaming=False, push_notifications=False),
-        default_input_modes=["text/plain"],
-        default_output_modes=["text/plain"],
-        skills=[
-            AgentSkill(
-                id="chat",
-                name="Conversación",
-                description="Conversación general en texto.",
-                tags=["chat"],
-                examples=["Hola, ¿qué puedes hacer?"],
-                input_modes=["text/plain"],
-                output_modes=["text/plain"],
-            )
-        ],
+        capabilities=AgentCapabilities(
+            streaming=False,
+            push_notifications=False,
+            extensions=[
+                AgentExtension(
+                    uri=base + "/mcp",
+                    description="Bookstore tools over MCP streamable HTTP. Same service and action rate limit as DataPart calls.",
+                    params={"transport": "streamable-http"},
+                    required=False,
+                )
+            ],
+        ),
+        default_input_modes=["application/json", "text/plain"],
+        default_output_modes=["application/json", "text/plain", "application/xml", "application/pdf"],
+        skills=skills,
     )
 
 
@@ -174,16 +259,8 @@ def card_dict() -> dict:
     return build_agent_card().model_dump(exclude_none=True, by_alias=True)
 
 
-async def health(_: Request) -> JSONResponse:
+def health(_: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
-
-
-class Application(A2AStarletteApplication):
-    def routes(self, *args, **kwargs):
-        return [
-            *super().routes(*args, **kwargs),
-            Route("/health", health, methods=["GET"]),
-        ]
 
 
 def client_ip(scope) -> str:
@@ -200,8 +277,17 @@ def client_ip(scope) -> str:
     return "unknown"
 
 
-def classify_body(body: bytes) -> tuple[str, str | int | None]:
-    """Return ('limited'|'other'|'plain', json-rpc id)."""
+def classify_body(body: bytes, path: str) -> tuple[str, str | int | None]:
+    """Return ('llm'|'action'|'other'|'plain', json-rpc id)."""
+    if path == "/mcp":
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return "plain-action", None
+        request_id = payload.get("id") if isinstance(payload, dict) else None
+        if not isinstance(request_id, str | int):
+            request_id = None
+        return "action", request_id
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -211,20 +297,27 @@ def classify_body(body: bytes) -> tuple[str, str | int | None]:
     request_id = payload.get("id")
     if not isinstance(request_id, str | int):
         request_id = None
-    if payload.get("method") in LIMITED_METHODS:
-        return "limited", request_id
-    return "other", request_id
+    if payload.get("method") not in LIMITED_METHODS:
+        return "other", request_id
+    message = (payload.get("params") or {}).get("message") or {}
+    parts = message.get("parts") or []
+    for part in parts:
+        if isinstance(part, dict) and part.get("kind") == "data":
+            return "action", request_id
+    return "llm", request_id
 
 
 class QuotaMiddleware:
-    """Count message/send and message/stream. Leave discovery and health alone."""
+    """LLM caps for text. A higher cap for DataPart actions and MCP. Card and health stay open."""
 
-    def __init__(self, app, quota: MessageQuota) -> None:
+    def __init__(self, app, llm_quota: MessageQuota, action_quota: MessageQuota) -> None:
         self.app = app
-        self.quota = quota
+        self.llm_quota = llm_quota
+        self.action_quota = action_quota
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope.get("method") != "POST" or scope.get("path") != "/":
+        path = scope.get("path")
+        if scope["type"] != "http" or scope.get("method") != "POST" or path not in {"/", "/mcp"}:
             await self.app(scope, receive, send)
             return
 
@@ -244,21 +337,30 @@ class QuotaMiddleware:
                 return chunks.pop(0)
             return {"type": "http.disconnect"}
 
-        kind, request_id = classify_body(body)
+        kind, request_id = classify_body(body, path)
         ip = client_ip(scope)
-        if kind == "limited":
-            reason = self.quota.consume(ip)
+        if kind == "llm":
+            reason = self.llm_quota.consume(ip)
             if reason:
-                response = JSONResponse(rpc_error(request_id, reason))
+                response = JSONResponse(rpc_error(request_id, reason, "message"))
+                await response(scope, replay, send)
+                return
+        elif kind == "action":
+            reason = self.action_quota.consume(ip)
+            if reason:
+                response = JSONResponse(rpc_error(request_id, reason, "action"))
                 await response(scope, replay, send)
                 return
         elif kind == "plain":
-            reason = self.quota.reason(ip)
+            reason = self.llm_quota.reason(ip)
             if reason:
-                response = JSONResponse(
-                    {"error": message_for(reason)},
-                    status_code=429,
-                )
+                response = JSONResponse({"error": message_for(reason, "message")}, status_code=429)
+                await response(scope, replay, send)
+                return
+        elif kind == "plain-action":
+            reason = self.action_quota.reason(ip)
+            if reason:
+                response = JSONResponse({"error": message_for(reason, "action")}, status_code=429)
                 await response(scope, replay, send)
                 return
         await self.app(scope, replay, send)
@@ -296,14 +398,64 @@ class CardCorsMiddleware:
         await self.app(scope, receive, send_with_cors)
 
 
-def create_app(quota: MessageQuota | None = None):
+class Application(A2AStarletteApplication):
+    def routes(self, *args, **kwargs):
+        return [
+            *super().routes(*args, **kwargs),
+            Route("/health", health, methods=["GET"]),
+        ]
+
+
+def create_app(
+    quota: MessageQuota | None = None,
+    action_quota: MessageQuota | None = None,
+    database_url: str | None = None,
+    graph=None,
+    store: Bookstore | None = None,
+):
+    bookstore = store or Bookstore(database_url=database_url, public_base=public_url())
+    functions = make_functions(bookstore)
+    if graph is None:
+        graph, _functions = build_graph(bookstore)
     handler = DefaultRequestHandler(
-        agent_executor=ChatExecutor(build_graph()),
+        agent_executor=BookstoreExecutor(graph, bookstore),
         task_store=InMemoryTaskStore(),
     )
+    mcp = build_mcp(functions)
+    mcp_http = mcp.streamable_http_app(
+        streamable_http_path="/mcp",
+        json_response=True,
+        stateless_http=True,
+        host="0.0.0.0",
+    )
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        async with mcp_http.router.lifespan_context(mcp_http):
+            yield
+
     server = Application(agent_card=build_agent_card(), http_handler=handler)
-    app = QuotaMiddleware(server.build(), quota or MessageQuota.from_env())
-    return CardCorsMiddleware(app)
+    application = server.build(lifespan=lifespan)
+    application.routes.extend(mcp_http.routes)
+    application.routes.append(Route("/invoices/{invoice_id}.xml", _invoice("xml", bookstore), methods=["GET"]))
+    application.routes.append(Route("/invoices/{invoice_id}.pdf", _invoice("pdf", bookstore), methods=["GET"]))
+    wrapped = QuotaMiddleware(
+        application,
+        quota or MessageQuota.from_env(),
+        action_quota or ActionQuota.from_env(),
+    )
+    return CardCorsMiddleware(wrapped)
+
+
+def _invoice(kind: str, store: Bookstore):
+    async def download(request: Request) -> Response:
+        found = store.invoice_download(request.path_params["invoice_id"], kind, request.query_params.get("token", ""))
+        if found is None:
+            return Response("Not found", status_code=404, media_type="text/plain")
+        content, mime, filename = found
+        return Response(content, media_type=mime, headers={"Content-Disposition": f'inline; filename="{filename}"'})
+
+    return download
 
 
 app = create_app()
