@@ -2,7 +2,9 @@
 
 import base64
 import json
+import logging
 import os
+import time
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
 
@@ -37,6 +39,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from actions import ACTIONS, skill_description
+from analytics import PAGE_ORIGIN, Recorder, authorize, build_report, deliver_report, parse_day, public_stats
 from bookstore import Bookstore
 from quota import LIMITED_METHODS, ActionQuota, MessageQuota, message_for, rpc_error
 from tools import build_mcp, langchain_tools, make_functions
@@ -56,6 +59,7 @@ SYSTEM_PROMPT = (
     "repeat the full number in your reply. Reply in English."
 )
 WORKING_ACTIONS = frozenset({"checkout", "pay", "generate_invoice", "notify_order"})
+log_analytics = logging.getLogger("agiq.analytics")
 
 
 class FakeChatModel(BaseChatModel):
@@ -339,15 +343,18 @@ class QuotaMiddleware:
 
         kind, request_id = classify_body(body, path)
         ip = client_ip(scope)
+        scope.setdefault("state", {})
         if kind == "llm":
             reason = self.llm_quota.consume(ip)
             if reason:
+                scope["state"]["quota_limited"] = True
                 response = JSONResponse(rpc_error(request_id, reason, "message"))
                 await response(scope, replay, send)
                 return
         elif kind == "action":
             reason = self.action_quota.consume(ip)
             if reason:
+                scope["state"]["quota_limited"] = True
                 response = JSONResponse(rpc_error(request_id, reason, "action"))
                 await response(scope, replay, send)
                 return
@@ -364,6 +371,54 @@ class QuotaMiddleware:
                 await response(scope, replay, send)
                 return
         await self.app(scope, replay, send)
+
+
+class AnalyticsMiddleware:
+    """Record the request after the response. Skip when the handler asks."""
+
+    def __init__(self, app, recorder: Recorder) -> None:
+        self.app = app
+        self.recorder = recorder
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        started = time.perf_counter()
+        status = {"code": 500}
+        body = b""
+        method = scope.get("method") or ""
+        if method in {"POST", "PUT", "PATCH"}:
+            chunks = []
+            while True:
+                message = await receive()
+                chunks.append(message)
+                if message["type"] != "http.request":
+                    break
+                body += message.get("body") or b""
+                if not message.get("more_body", False):
+                    break
+
+            async def receive_call():
+                if chunks:
+                    return chunks.pop(0)
+                return {"type": "http.disconnect"}
+        else:
+            receive_call = receive
+
+        async def send_call(message):
+            if message["type"] == "http.response.start":
+                status["code"] = message["status"]
+            await send(message)
+
+        try:
+            await self.app(scope, receive_call, send_call)
+        finally:
+            elapsed = int((time.perf_counter() - started) * 1000)
+            try:
+                self.recorder.record_request(scope, body, status["code"], elapsed)
+            except Exception:
+                log_analytics.exception("analytics record failed")
 
 
 class CardCorsMiddleware:
@@ -436,15 +491,98 @@ def create_app(
 
     server = Application(agent_card=build_agent_card(), http_handler=handler)
     application = server.build(lifespan=lifespan)
+    recorder = Recorder(bookstore)
     application.routes.extend(mcp_http.routes)
     application.routes.append(Route("/invoices/{invoice_id}.xml", _invoice("xml", bookstore), methods=["GET"]))
     application.routes.append(Route("/invoices/{invoice_id}.pdf", _invoice("pdf", bookstore), methods=["GET"]))
+    application.routes.append(Route("/analytics/pageview", _pageview(recorder), methods=["POST", "OPTIONS"]))
+    application.routes.append(Route("/admin/daily-report", _daily_report(bookstore), methods=["POST"]))
+    application.routes.append(Route("/admin/stats", _stats(bookstore), methods=["GET"]))
     wrapped = QuotaMiddleware(
         application,
         quota or MessageQuota.from_env(),
         action_quota or ActionQuota.from_env(),
     )
-    return CardCorsMiddleware(wrapped)
+    return CardCorsMiddleware(AnalyticsMiddleware(wrapped, recorder))
+
+
+def _cors_headers(origin: str | None) -> dict[str, str]:
+    if origin == PAGE_ORIGIN:
+        return {
+            "Access-Control-Allow-Origin": PAGE_ORIGIN,
+            "Vary": "Origin",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "content-type",
+            "Access-Control-Max-Age": "600",
+        }
+    return {}
+
+
+def _skip(request: Request) -> None:
+    request.scope.setdefault("state", {})["analytics_skip"] = True
+
+
+def _pageview(recorder: Recorder):
+    async def pageview(request: Request) -> Response:
+        origin = request.headers.get("origin")
+        headers = _cors_headers(origin)
+        if request.method == "OPTIONS":
+            _skip(request)
+            if origin != PAGE_ORIGIN:
+                return Response(status_code=403)
+            return Response(status_code=204, headers=headers)
+        if origin != PAGE_ORIGIN:
+            _skip(request)
+            return Response("Forbidden", status_code=403, media_type="text/plain")
+        if not recorder.limiter.allow(recorder.hash_ip(client_ip(request.scope))):
+            _skip(request)
+            return Response(status_code=429, headers=headers)
+        return Response(status_code=204, headers=headers)
+
+    return pageview
+
+
+def _admin_guard(request: Request) -> Response | None:
+    status = authorize(request.headers.get("authorization"))
+    if status is None:
+        return None
+    if status == 404:
+        return Response(status_code=404)
+    return Response("Unauthorized", status_code=401, media_type="text/plain")
+
+
+def _report_day(request: Request):
+    try:
+        return parse_day(request.query_params.get("date"))
+    except ValueError:
+        return None
+
+
+def _daily_report(store: Bookstore):
+    async def daily_report(request: Request) -> Response:
+        refused = _admin_guard(request)
+        if refused is not None:
+            return refused
+        day = _report_day(request)
+        if day is None:
+            return JSONResponse({"error": "date must be YYYY-MM-DD"}, status_code=400)
+        dry_run = request.query_params.get("dry_run", "").lower() in {"1", "true", "yes"}
+        return JSONResponse(deliver_report(store, day, dry_run=dry_run))
+
+    return daily_report
+
+
+def _stats(store: Bookstore):
+    async def stats(request: Request) -> Response:
+        refused = _admin_guard(request)
+        if refused is not None:
+            return refused
+        day = _report_day(request)
+        if day is None:
+            return JSONResponse({"error": "date must be YYYY-MM-DD"}, status_code=400)
+        return JSONResponse(public_stats(build_report(store, day)))
+
+    return stats
 
 
 def _invoice(kind: str, store: Bookstore):

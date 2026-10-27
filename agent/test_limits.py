@@ -168,14 +168,26 @@ class ServerLimitTests(unittest.TestCase):
         self.assertIn("https://agent.agiq.top/.well-known/agent-card.json", page)
         self.assertIn("https://agiq.top/.well-known/agent-card.json", page)
         self.assertNotIn("message/send", page)
-        self.assertNotIn("<script", page.lower())
+        self.assertIn("https://agent.agiq.top/analytics/pageview", page)
+        self.assertIn("<script", page.lower())
         blueprint = (ROOT / "render.yaml").read_text()
         self.assertIn("MAX_DAILY_MESSAGES", blueprint)
         self.assertIn('value: "30"', blueprint)
         self.assertIn("MAX_DAILY_ACTIONS", blueprint)
         self.assertIn('value: "1000"', blueprint)
-        for key in ("RESEND_API_KEY", "EMAIL_FROM", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD"):
+        for key in (
+            "RESEND_API_KEY",
+            "EMAIL_FROM",
+            "EMAIL_REPLY_TO",
+            "REPORT_EMAIL_TO",
+            "ADMIN_TOKEN",
+            "SMTP_HOST",
+            "SMTP_PORT",
+            "SMTP_USER",
+            "SMTP_PASSWORD",
+        ):
             self.assertIn(key, blueprint)
+        self.assertIn("mbueno74@hotmail.com", blueprint)
 
 
 if __name__ == "__main__":

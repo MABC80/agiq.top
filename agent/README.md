@@ -122,16 +122,18 @@ The agent card repeats these input and output JSON schemas on each skill.
 
 `EmailProvider` has two implementations:
 
-- Resend, when both `RESEND_API_KEY` and `EMAIL_FROM` are set.
+- Resend, when both `RESEND_API_KEY` and `EMAIL_FROM` are set. `EMAIL_FROM` must be an address on a domain Resend has verified, for example `AGIQ Books <orders@agiq.top>`. A hotmail.com address cannot be the sender.
 - SMTP, when `SMTP_HOST` and `EMAIL_FROM` are set. `SMTP_PORT` defaults to 587. `SMTP_USER` and `SMTP_PASSWORD` are used when set.
 
-If neither pair is set, notification status is `not_sent: email provider not configured`. A hyphen, `none`, `null`, `unused`, or `changeme` is treated as unset so a Render prompt can be filled without turning email on. A provider that errors is recorded as `not_sent: email provider returned an error` and does not undo the payment.
+`EMAIL_REPLY_TO` is copied onto order confirmations and the daily report (`Reply-To` / Resend `reply_to`). Use it for a mailbox the owner actually reads, such as `mbueno74@hotmail.com`. The daily report is sent to `REPORT_EMAIL_TO`.
+
+If neither provider pair is set, notification status is `not_sent: email provider not configured`. A hyphen, `none`, `null`, `unused`, or `changeme` is treated as unset so a Render prompt can be filled without turning email on. A provider that errors is recorded as `not_sent: email provider returned an error` and does not undo the payment.
 
 ## Persistence
 
 SQLAlchemy uses SQLite at `agent/data/bookstore.sqlite` unless `BOOKSTORE_SQLITE_PATH` or `DATABASE_URL` is set. On the Render free plan that disk is ephemeral: customers, carts, orders, invoices, and simulated stock reset on redeploy or restart. The catalog JSON is part of the image and remains.
 
-To keep data, set `DATABASE_URL` to Postgres, for example `postgresql://user:pass@host:5432/agiq` (a `postgres://` URL is accepted too). The app loads it with the `psycopg` driver. Create the database yourself; tables are created on startup. Render Postgres is a separate service from the free web instance.
+To keep data, set `DATABASE_URL` to Postgres, for example `postgresql://user:pass@host:5432/agiq` (a `postgres://` URL is accepted too). The app loads it with the `psycopg` driver. Create the database yourself; tables for customers, carts, orders, invoices, stock, the invoice counter, and visits are created on startup. The same models run on SQLite and Postgres. Render Postgres is a separate service from the free web instance. Visit rows older than 90 days are deleted.
 
 ## Rate limits
 
@@ -139,7 +141,8 @@ Counters are in memory and reset when the process restarts, including a free ins
 
 - Natural language (`message/send` and `message/stream` with a TextPart): `MAX_DAILY_MESSAGES` (default 30, UTC day) and `MAX_MESSAGES_PER_IP_PER_HOUR` (default 5). The IP is the first `X-Forwarded-For` hop.
 - Structured DataPart actions and `POST /mcp`: `MAX_DAILY_ACTIONS` (default 1000) and `MAX_ACTIONS_PER_IP_PER_HOUR` (default 60). These calls do not use the OpenAI key.
-- The agent card, `agent.json`, and `/health` are not counted.
+- The agent card, `agent.json`, and `/health` are not counted toward those caps.
+- The landing-page beacon allows 60 posts per IP hash per hour (`PAGEVIEW_PER_HOUR`).
 
 Over the cap, JSON-RPC returns HTTP 200 with error `-32029`. A POST that is not JSON is HTTP 429.
 
@@ -171,7 +174,7 @@ A2A_FAKE_LLM=1 uvicorn app:app --host 127.0.0.1 --port 8000
 Do not set `A2A_FAKE_LLM` on Render.
 
 ```bash
-A2A_FAKE_LLM=1 python -m unittest test_limits test_bookstore
+A2A_FAKE_LLM=1 python -m unittest test_limits test_bookstore test_analytics
 ```
 
 ## curl
@@ -192,6 +195,18 @@ curl -s https://agent.agiq.top/ \
 
 Health: `curl -s https://agent.agiq.top/health`
 
+## Visits and the daily report
+
+The agent records card fetches, A2A calls, MCP calls, invoice downloads, and landing-page beacons. `/health` is stored as a monitor and left out of the report totals. The raw IP is not stored: each UTC day has its own salt, and the row keeps SHA-256 of that salt plus the address. Country comes from `cf-ipcountry`, `x-vercel-ip-country`, or a similar header, otherwise null. Natural-language calls store the text length only. Structured calls store the action name, not the payload. A browser that runs the beacon on https://agiq.top is counted as a human page view. The beacon is allowed from that origin only.
+
+There is no in-process scheduler, because the free Render service sleeps. An external scheduler should call:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" "https://agent.agiq.top/admin/daily-report"
+```
+
+That sends yesterday's report in the Europe/Berlin calendar to `REPORT_EMAIL_TO`. Add `?date=YYYY-MM-DD` to choose a day. Add `?dry_run=1` to get the JSON and HTML without sending mail. `GET /admin/stats?date=YYYY-MM-DD` with the same bearer token returns the JSON only. If `ADMIN_TOKEN` is unset the paths respond 404. A wrong token responds 401. The comparison hashes both values first so the check does not leak the token length.
+
 ## Render
 
-`render.yaml` builds `agent/` and runs `uvicorn app:app --host 0.0.0.0 --port $PORT`. Set `OPENAI_API_KEY` for natural language. Email and Stripe variables are `sync: false`; leave them as a hyphen unless you want that provider. `MAX_DAILY_MESSAGES` is `30` and `MAX_DAILY_ACTIONS` is `1000`.
+`render.yaml` builds `agent/` and runs `uvicorn app:app --host 0.0.0.0 --port $PORT`. Set `OPENAI_API_KEY` for natural language. `RESEND_API_KEY`, `EMAIL_FROM`, the SMTP variables, `STRIPE_SECRET_KEY`, and `ADMIN_TOKEN` are `sync: false`. `EMAIL_REPLY_TO` and `REPORT_EMAIL_TO` are `mbueno74@hotmail.com`. Leave a secret as a hyphen when you are not using that provider. `MAX_DAILY_MESSAGES` is `30` and `MAX_DAILY_ACTIONS` is `1000`.

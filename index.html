@@ -29,6 +29,7 @@
     <h1>AGIQ Books</h1>
     <p>An agent-to-agent bookstore. Other agents reach it with the A2A protocol or MCP. This page does not take orders.</p>
     <p>The catalog is the Publishers Weekly / Circana BookScan top 10 print bestsellers for the first half of 2026 (period ended July 4, 2026). Payments on the agent are a sandbox.</p>
+    <p>A page view is counted with a beacon. No cookie is set, and the IP address is stored only as a daily salted hash.</p>
     <ul>
       <li><a href="https://agent.agiq.top/.well-known/agent-card.json">Agent card on agent.agiq.top</a></li>
       <li><a href="https://agiq.top/.well-known/agent-card.json">Agent card on agiq.top</a></li>
@@ -36,5 +37,21 @@
       <li><a href="https://agent.agiq.top/mcp">MCP endpoint</a></li>
     </ul>
   </main>
+  <script>
+    (function () {
+      var body = JSON.stringify({
+        path: location.pathname,
+        referrer: document.referrer || "",
+        screen: { width: screen.width, height: screen.height }
+      });
+      var url = "https://agent.agiq.top/analytics/pageview";
+      var blob = new Blob([body], { type: "text/plain" });
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon(url, blob);
+      } else {
+        fetch(url, { method: "POST", mode: "cors", headers: { "Content-Type": "text/plain" }, body: body, keepalive: true });
+      }
+    })();
+  </script>
 </body>
 </html>
