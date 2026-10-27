@@ -694,6 +694,7 @@ class Bookstore:
                         (f"{invoice.number}.xml", invoice.xml.encode("utf-8"), "application/xml"),
                         (f"{invoice.number}.pdf", invoice.pdf, "application/pdf"),
                     ],
+                    reply_to=getattr(self.email, "reply_to", None) or None,
                 )
                 status = "sent"
             except Exception:

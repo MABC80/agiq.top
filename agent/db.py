@@ -118,6 +118,42 @@ class Counter(Base):
     value: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class Visit(Base):
+    """One request or landing-page view. The raw IP address is never stored."""
+
+    __tablename__ = "visits"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    method: Mapped[str] = mapped_column(String(8))
+    path: Mapped[str] = mapped_column(String(200))
+    status_code: Mapped[int] = mapped_column(Integer)
+    latency_ms: Mapped[int] = mapped_column(Integer)
+    user_agent: Mapped[str] = mapped_column(String(400), default="")
+    ip_hash: Mapped[str] = mapped_column(String(64))
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    referer: Mapped[str] = mapped_column(String(500), default="")
+    rpc_method: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    style: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    action_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    text_length: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    agent_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    agent_card_url: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    classification: Mapped[str] = mapped_column(String(16))
+    classifier_reason: Mapped[str] = mapped_column(String(200))
+    quota_limited: Mapped[bool] = mapped_column(Boolean, default=False)
+    screen_w: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    screen_h: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class DailySalt(Base):
+    """Salt for the IP hash. A new value is created for each UTC day."""
+
+    __tablename__ = "analytics_salts"
+    day: Mapped[str] = mapped_column(String(10), primary_key=True)
+    salt: Mapped[str] = mapped_column(String(64))
+
+
 def env_text(name: str) -> str:
     """Blank and hyphen placeholders count as unset (Render blueprint prompts)."""
     value = os.environ.get(name, "").strip()
@@ -155,6 +191,8 @@ def make_engine(url: str | None = None):
     kwargs = {}
     if target.startswith("sqlite"):
         kwargs["connect_args"] = {"check_same_thread": False}
+    else:
+        kwargs["pool_pre_ping"] = True
     return create_engine(target, **kwargs), target
 
 

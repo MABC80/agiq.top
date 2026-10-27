@@ -8,39 +8,72 @@ NOT_CONFIGURED = "not_sent: email provider not configured"
 
 
 class EmailProvider:
+    reply_to: str = ""
+
     def send(
         self,
         *,
         to: str,
         subject: str,
         text: str,
-        attachments: list[tuple[str, bytes, str]],
+        attachments: list[tuple[str, bytes, str]] | None = None,
+        reply_to: str | None = None,
+        html: str | None = None,
     ) -> str:
         raise NotImplementedError
 
 
+def resend_payload(
+    *,
+    sender: str,
+    to: str,
+    subject: str,
+    text: str,
+    html: str | None = None,
+    reply_to: str | None = None,
+    attachments: list[tuple[str, bytes, str]] | None = None,
+) -> dict:
+    payload = {
+        "from": sender,
+        "to": [to],
+        "subject": subject,
+        "text": text,
+    }
+    if html:
+        payload["html"] = html
+    if reply_to:
+        payload["reply_to"] = reply_to
+    if attachments:
+        payload["attachments"] = [
+            {
+                "filename": name,
+                "content": base64.b64encode(content).decode("ascii"),
+                "content_type": mime,
+            }
+            for name, content, mime in attachments
+        ]
+    return payload
+
+
 class ResendEmail(EmailProvider):
-    def __init__(self, api_key: str, sender: str) -> None:
+    def __init__(self, api_key: str, sender: str, reply_to: str = "") -> None:
         self._api_key = api_key
         self._sender = sender
+        self.reply_to = reply_to
 
-    def send(self, *, to, subject, text, attachments) -> str:
+    def send(self, *, to, subject, text, attachments=None, reply_to=None, html=None) -> str:
         import httpx
 
-        payload = {
-            "from": self._sender,
-            "to": [to],
-            "subject": subject,
-            "text": text,
-            "attachments": [
-                {
-                    "filename": name,
-                    "content": base64.b64encode(content).decode("ascii"),
-                    "content_type": mime,
-                }
-                for name, content, mime in attachments
-            ],
-        }
+        chosen = self.reply_to if reply_to is None else reply_to
+        payload = resend_payload(
+            sender=self._sender,
+            to=to,
+            subject=subject,
+            text=text,
+            html=html,
+            reply_to=chosen or None,
+            attachments=attachments,
+        )
         response = httpx.post(
             "https://api.resend.com/emails",
             headers={"Authorization": f"Bearer {self._api_key}"},
@@ -52,20 +85,26 @@ class ResendEmail(EmailProvider):
 
 
 class SmtpEmail(EmailProvider):
-    def __init__(self, host: str, port: int, sender: str, username: str, password: str) -> None:
+    def __init__(self, host: str, port: int, sender: str, username: str, password: str, reply_to: str = "") -> None:
         self._host = host
         self._port = port
         self._sender = sender
         self._username = username
         self._password = password
+        self.reply_to = reply_to
 
-    def send(self, *, to, subject, text, attachments) -> str:
+    def send(self, *, to, subject, text, attachments=None, reply_to=None, html=None) -> str:
+        chosen = self.reply_to if reply_to is None else reply_to
         message = EmailMessage()
         message["From"] = self._sender
         message["To"] = to
         message["Subject"] = subject
+        if chosen:
+            message["Reply-To"] = chosen
         message.set_content(text)
-        for name, content, mime in attachments:
+        if html:
+            message.add_alternative(html, subtype="html")
+        for name, content, mime in attachments or []:
             main, _, sub = mime.partition("/")
             message.add_attachment(content, maintype=main or "application", subtype=sub or "octet-stream", filename=name)
         with smtplib.SMTP(self._host, self._port, timeout=30) as smtp:
@@ -80,9 +119,10 @@ def email_provider_from_env() -> EmailProvider | None:
     from db import env_text
 
     sender = env_text("EMAIL_FROM")
+    reply_to = env_text("EMAIL_REPLY_TO")
     resend_key = env_text("RESEND_API_KEY")
     if resend_key and sender:
-        return ResendEmail(resend_key, sender)
+        return ResendEmail(resend_key, sender, reply_to)
     host = env_text("SMTP_HOST")
     if host and sender:
         port_text = env_text("SMTP_PORT") or "587"
@@ -90,5 +130,5 @@ def email_provider_from_env() -> EmailProvider | None:
             port = int(port_text)
         except ValueError:
             port = 587
-        return SmtpEmail(host, port, sender, env_text("SMTP_USER"), env_text("SMTP_PASSWORD"))
+        return SmtpEmail(host, port, sender, env_text("SMTP_USER"), env_text("SMTP_PASSWORD"), reply_to)
     return None
