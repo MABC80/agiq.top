@@ -40,6 +40,7 @@ from starlette.routing import Route
 
 from actions import ACTIONS, skill_description
 from analytics import PAGE_ORIGIN, Recorder, authorize, build_report, deliver_report, parse_day, public_stats
+from conversations import public_threads
 from bookstore import Bookstore
 from quota import LIMITED_METHODS, ActionQuota, MessageQuota, message_for, rpc_error
 from tools import build_mcp, langchain_tools, make_functions
@@ -406,9 +407,20 @@ class AnalyticsMiddleware:
         else:
             receive_call = receive
 
+        captured = {"body": b"", "keep": True}
+
         async def send_call(message):
             if message["type"] == "http.response.start":
                 status["code"] = message["status"]
+            elif message["type"] == "http.response.body" and captured["keep"]:
+                chunk = message.get("body") or b""
+                if not isinstance(chunk, bytes):
+                    chunk = bytes(chunk)
+                if len(captured["body"]) + len(chunk) <= 524288:
+                    captured["body"] += chunk
+                else:
+                    captured["keep"] = False
+                    captured["body"] = b""
             await send(message)
 
         try:
@@ -416,7 +428,7 @@ class AnalyticsMiddleware:
         finally:
             elapsed = int((time.perf_counter() - started) * 1000)
             try:
-                self.recorder.record_request(scope, body, status["code"], elapsed)
+                self.recorder.record_request(scope, body, status["code"], elapsed, captured["body"])
             except Exception:
                 log_analytics.exception("analytics record failed")
 
@@ -498,6 +510,7 @@ def create_app(
     application.routes.append(Route("/analytics/pageview", _pageview(recorder), methods=["POST", "OPTIONS"]))
     application.routes.append(Route("/admin/daily-report", _daily_report(bookstore), methods=["POST"]))
     application.routes.append(Route("/admin/stats", _stats(bookstore), methods=["GET"]))
+    application.routes.append(Route("/admin/conversations", _conversations(bookstore), methods=["GET"]))
     wrapped = QuotaMiddleware(
         application,
         quota or MessageQuota.from_env(),
@@ -570,6 +583,20 @@ def _daily_report(store: Bookstore):
         return JSONResponse(deliver_report(store, day, dry_run=dry_run))
 
     return daily_report
+
+
+def _conversations(store: Bookstore):
+    async def conversations(request: Request) -> Response:
+        refused = _admin_guard(request)
+        if refused is not None:
+            return refused
+        day = _report_day(request)
+        if day is None:
+            return JSONResponse({"error": "date must be YYYY-MM-DD"}, status_code=400)
+        summarize = request.query_params.get("summarize", "").lower() in {"1", "true", "yes"}
+        return JSONResponse(public_threads(store, day, summarize=summarize))
+
+    return conversations
 
 
 def _stats(store: Bookstore):
