@@ -154,6 +154,25 @@ class DailySalt(Base):
     salt: Mapped[str] = mapped_column(String(64))
 
 
+class ConversationMessage(Base):
+    """One inbound A2A or MCP turn and the reply. Content is redacted and truncated."""
+
+    __tablename__ = "conversation_messages"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    visitor_hash: Mapped[str] = mapped_column(String(64), index=True)
+    actor_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    classification: Mapped[str] = mapped_column(String(16))
+    classifier_reason: Mapped[str] = mapped_column(String(200))
+    context_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    style: Mapped[str] = mapped_column(String(32))
+    action_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    rpc_method: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    inbound: Mapped[str] = mapped_column(Text, default="")
+    reply: Mapped[str] = mapped_column(Text, default="")
+
+
 def env_text(name: str) -> str:
     """Blank and hyphen placeholders count as unset (Render blueprint prompts)."""
     value = os.environ.get(name, "").strip()

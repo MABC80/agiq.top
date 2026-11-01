@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, select
 
-from db import DailySalt, Visit, env_text, utcnow
+from db import ConversationMessage, DailySalt, Visit, env_text, utcnow
 from emailer import NOT_CONFIGURED
 from invoicing import money
 from quota import DEFAULT_DAILY_LIMIT, parse_limit, DAILY_LIMIT_ENV
@@ -28,6 +28,7 @@ log = logging.getLogger("agiq.analytics")
 
 BERLIN = ZoneInfo("Europe/Berlin")
 RETENTION_DAYS = 90
+CONVERSATION_RETENTION_DAYS = 30
 PAGE_ORIGIN = "https://agiq.top"
 REPORT_MISSING = "not_sent: REPORT_EMAIL_TO is not configured"
 
@@ -360,8 +361,10 @@ class Recorder:
     def prune(self, session) -> None:
         cutoff = utcnow() - timedelta(days=RETENTION_DAYS)
         session.execute(delete(Visit).where(Visit.created_at < cutoff))
+        conversation_cutoff = utcnow() - timedelta(days=CONVERSATION_RETENTION_DAYS)
+        session.execute(delete(ConversationMessage).where(ConversationMessage.created_at < conversation_cutoff))
 
-    def record_request(self, scope, body: bytes, status_code: int, latency_ms: int) -> None:
+    def record_request(self, scope, body: bytes, status_code: int, latency_ms: int, response_body: bytes = b"") -> None:
         state = scope.get("state") or {}
         if state.get("analytics_skip"):
             return
@@ -406,6 +409,24 @@ class Recorder:
                 screen_h=parsed["screen_h"],
             )
             session.add(visit)
+            try:
+                from conversations import log_turn
+
+                log_turn(
+                    session,
+                    path=path,
+                    request_body=body,
+                    response_body=response_body,
+                    visitor_hash=visit.ip_hash,
+                    actor_name=visit.agent_name,
+                    classification=classification,
+                    classifier_reason=visit.classifier_reason,
+                    style=parsed["style"],
+                    action_name=parsed["action_name"],
+                    rpc_method=parsed["rpc_method"],
+                )
+            except Exception:
+                log.exception("conversation log failed")
             session.commit()
 
 
@@ -511,6 +532,10 @@ def build_report(store, day: date) -> dict:
         "monitors": sum(1 for row in visits if row.kind == "monitor"),
         "admin_calls": sum(1 for row in visits if row.kind == "admin"),
     }
+    from conversations import load_threads, summarize_threads, visit_goal_section
+
+    threads = load_threads(store, start, end)
+    stats["visit_goals"] = visit_goal_section(threads, summarize_threads(threads))
     text = render_text(stats)
     return {**stats, "text": text, "html": render_html(stats)}
 
@@ -611,8 +636,11 @@ def render_text(stats: dict) -> str:
             f"styles={styles_used} first={actor['first_seen']} last={actor['last_seen']} "
             f"ua={actor['user_agent']}"
         )
+    from conversations import goal_text_lines
+
+    lines.extend(goal_text_lines(stats.get("visit_goals") or {}))
     lines.append("")
-    lines.append("IP addresses are stored only as a daily salted SHA-256 hash.")
+    lines.append("IP addresses are stored only as a daily salted SHA-256 hash. Conversation excerpts are redacted.")
     return "\n".join(lines)
 
 
@@ -697,9 +725,16 @@ def render_html(stats: dict) -> str:
             ["Name", "Classification", "Requests", "Styles", "First seen", "Last seen", "User-Agent"],
             actor_rows,
         ),
-        "<p>IP addresses are stored only as a daily salted SHA-256 hash. This report does not include message text or card numbers.</p>",
-        "</body></html>",
     ]
+    from conversations import goal_html
+
+    parts.append(goal_html(stats.get("visit_goals") or {}))
+    parts.extend(
+        [
+        "<p>IP addresses are stored only as a daily salted SHA-256 hash. Conversation excerpts are redacted, and card numbers are not stored.</p>",
+        "</body></html>",
+        ]
+    )
     return "".join(parts)
 
 
