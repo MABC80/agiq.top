@@ -73,6 +73,105 @@ class BoundTests(unittest.TestCase):
         self.assertEqual(set(body), {"status", "rss_kb"})
 
 
+class ReportFlightTests(unittest.TestCase):
+    def tearDown(self):
+        app.reset_report_gate()
+        os.environ.pop("ADMIN_TOKEN", None)
+
+    def test_a_second_report_is_rejected_and_health_still_answers(self):
+        import asyncio
+        import threading
+
+        import httpx
+
+        started = threading.Event()
+        release = threading.Event()
+        calls = {"n": 0}
+        original = app.deliver_report
+
+        def slow(store, day, *, dry_run):
+            calls["n"] += 1
+            started.set()
+            release.wait(5)
+            return {"date": day.isoformat(), "email": {"status": "dry_run"}}
+
+        app.deliver_report = slow
+        application = app.create_app(database_url="sqlite:///" + str(Path(tempfile.mkdtemp()) / "books.sqlite"))
+        os.environ["ADMIN_TOKEN"] = "secret-token"
+
+        async def run():
+            transport = httpx.ASGITransport(app=application)
+            async with httpx.AsyncClient(transport=transport, base_url="http://report") as client:
+                headers = {"Authorization": "Bearer secret-token"}
+
+                async def first():
+                    return await client.post("/admin/daily-report?date=2026-10-26&dry_run=1", headers=headers)
+
+                task = asyncio.create_task(first())
+                for _ in range(100):
+                    if started.is_set():
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertTrue(started.is_set())
+                import time
+
+                clock = time.perf_counter()
+                health = await client.get("/health")
+                self.assertLess(time.perf_counter() - clock, 1.0)
+                self.assertEqual(health.status_code, 200)
+                self.assertEqual(health.json()["status"], "ok")
+                second = await client.post("/admin/daily-report?date=2026-10-26&dry_run=1", headers=headers)
+                self.assertEqual(second.status_code, 409)
+                self.assertEqual(second.json()["error"], app.REPORT_BUSY)
+                release.set()
+                done = await task
+                self.assertEqual(done.status_code, 200)
+                again = await client.post("/admin/daily-report?date=2026-10-26&dry_run=1", headers=headers)
+                self.assertEqual(again.status_code, 200)
+                self.assertEqual(again.json()["email"]["status"], "dry_run")
+                self.assertEqual(calls["n"], 1)
+
+        try:
+            asyncio.run(run())
+        finally:
+            release.set()
+            app.deliver_report = original
+            app.reset_report_gate()
+
+    def test_conversation_load_keeps_the_latest_rows_and_cuts_text(self):
+        from conversations import MESSAGE_LIMIT, load_threads
+        from datetime import timezone
+
+        from analytics import berlin_window
+        from db import ConversationMessage
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = Bookstore(database_url="sqlite:///" + str(Path(directory) / "books.sqlite"))
+            start, _end = berlin_window(__import__("datetime").date(2026, 10, 26))
+            with store.Session() as session:
+                for number in range(MESSAGE_LIMIT + 5):
+                    session.add(
+                        ConversationMessage(
+                            created_at=start + timedelta(minutes=number),
+                            visitor_hash="ab" * 32,
+                            classification="ai_agent",
+                            classifier_reason="declared agent identity",
+                            style="natural_language",
+                            context_id="ctx",
+                            inbound="m" + str(number) + ("x" * 800),
+                            reply="reply " + str(number),
+                        )
+                    )
+                session.commit()
+            threads = load_threads(store, start, start + timedelta(days=1), text_chars=500)
+        self.assertEqual(len(threads), 1)
+        messages = threads[0]["messages"]
+        self.assertEqual(len(messages), MESSAGE_LIMIT)
+        self.assertTrue(messages[0]["inbound"].startswith("m5"))
+        self.assertTrue(messages[-1]["inbound"].startswith("m204"))
+        self.assertLessEqual(len(messages[0]["inbound"]), 500)
+
+
 class ReportQueryTests(unittest.TestCase):
     def test_report_counts_the_day_without_loading_other_days(self):
         with tempfile.TemporaryDirectory() as directory:

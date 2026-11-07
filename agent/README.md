@@ -207,6 +207,8 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" "https://agent.agiq.top/
 
 That sends yesterday's report in the Europe/Berlin calendar to `REPORT_EMAIL_TO`. Add `?date=YYYY-MM-DD` to choose a day. Add `?dry_run=1` to get the JSON and HTML without sending mail. `GET /admin/stats?date=YYYY-MM-DD` with the same bearer token returns the JSON only. If `ADMIN_TOKEN` is unset the paths respond 404. A wrong token responds 401. The comparison hashes both values first so the check does not leak the token length.
 
+The report aggregates in SQL and reads at most the latest 200 conversation turns, with each side cut to 500 characters. It runs off the request thread so `/health` can answer during the build. A second call while one is still running gets HTTP 409 `A daily report is already running.` A finished day is reused instead of being built again. Each stage logs `daily report stage=... rss_kb=...` and nothing else.
+
 ## Conversations
 
 `message/send`, `message/stream`, and MCP `tools/call` are also stored as turns: visitor hash (the same daily salted hash, never the raw IP), actor name, classification, `contextId` and `taskId` when the caller sends them, style, action or tool name, the inbound text, and AGIQ's reply. Each side is cut at about 2000 characters. Before anything is written, card numbers, CVC values, email addresses, phone numbers, and secret-shaped tokens are replaced. Rows older than 30 days are deleted. The aggregate visit table still stores only lengths and action names.

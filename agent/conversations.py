@@ -297,7 +297,21 @@ def _aware(moment: datetime) -> datetime:
     return moment.astimezone(timezone.utc)
 
 
-def load_threads(store, start: datetime, end: datetime) -> list[dict]:
+MESSAGE_LIMIT = 200
+MESSAGE_TEXT_CHARS = 500
+
+
+def load_threads(
+    store,
+    start: datetime,
+    end: datetime,
+    *,
+    limit: int = MESSAGE_LIMIT,
+    text_chars: int = MESSAGE_TEXT_CHARS,
+) -> list[dict]:
+    """Latest turns only, with text cut in SQL so a long day cannot fill RAM."""
+    from sqlalchemy import func
+
     with store.Session() as session:
         selected = session.execute(
             select(
@@ -309,12 +323,14 @@ def load_threads(store, start: datetime, end: datetime) -> list[dict]:
                 ConversationMessage.task_id,
                 ConversationMessage.style,
                 ConversationMessage.action_name,
-                ConversationMessage.inbound,
-                ConversationMessage.reply,
+                func.substr(ConversationMessage.inbound, 1, text_chars).label("inbound"),
+                func.substr(ConversationMessage.reply, 1, text_chars).label("reply"),
             )
             .where(ConversationMessage.created_at >= start, ConversationMessage.created_at < end)
-            .order_by(ConversationMessage.created_at, ConversationMessage.id)
+            .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
+            .limit(limit)
         ).all()
+        selected.reverse()
         plain = [
             {
                 "created_at": _aware(row.created_at),

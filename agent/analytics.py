@@ -21,6 +21,7 @@ from sqlalchemy import case, delete, distinct, func, or_, select
 from db import ConversationMessage, DailySalt, Visit, env_text, utcnow
 from emailer import NOT_CONFIGURED
 from invoicing import money
+from memory import rss_kb
 from quota import DEFAULT_DAILY_LIMIT, parse_limit, DAILY_LIMIT_ENV
 
 log = logging.getLogger("agiq.analytics")
@@ -491,8 +492,13 @@ def _pairs_from(session, column, *where, label: str, limit: int | None = None) -
     return [{label: name, "count": int(count)} for name, count in session.execute(statement).all()]
 
 
+def _stage(stage: str, day: date) -> None:
+    log.info("daily report stage=%s date=%s rss_kb=%s", stage, day.isoformat(), rss_kb())
+
+
 def build_report(store, day: date) -> dict:
     """Aggregate one Berlin day in SQL. Do not load visit rows or invoice files."""
+    _stage("start", day)
     start, end = berlin_window(day)
     from db import Cart, Customer, Invoice, Order, Payment
 
@@ -533,7 +539,7 @@ def build_report(store, day: date) -> dict:
             limit=10,
         )
         country = case((or_(Visit.country.is_(None), Visit.country == ""), "unknown"), else_=Visit.country)
-        countries = _pairs_from(session, country, *traffic, label="country")
+        countries = _pairs_from(session, country, *traffic, label="country", limit=30)
         referrer = case((or_(Visit.referer.is_(None), Visit.referer == ""), "(direct)"), else_=Visit.referer)
         referrers = _pairs_from(
             session,
@@ -589,6 +595,7 @@ def build_report(store, day: date) -> dict:
             )
         )
         actors = _actors(session, start, end)
+    _stage("aggregates", day)
     stats = {
         "date": day.isoformat(),
         "timezone": "Europe/Berlin",
@@ -633,9 +640,13 @@ def build_report(store, day: date) -> dict:
     from conversations import load_threads, summarize_threads, visit_goal_section
 
     threads = load_threads(store, start, end)
+    _stage("conversations", day)
     stats["visit_goals"] = visit_goal_section(threads, summarize_threads(threads))
+    _stage("summary", day)
     text = render_text(stats)
-    return {**stats, "text": text, "html": render_html(stats)}
+    rendered = {**stats, "text": text, "html": render_html(stats)}
+    _stage("render", day)
+    return rendered
 
 
 def _count_model(session, model, *where) -> int:
@@ -660,6 +671,8 @@ def _actors(session, start: datetime, end: datetime) -> list[dict]:
             Visit.kind.notin_(("monitor", "admin")),
         )
         .group_by(Visit.agent_name, Visit.classification, Visit.user_agent, Visit.style)
+        .order_by(func.count().desc())
+        .limit(200)
     ).all()
     grouped: dict[tuple, dict] = {}
     for agent_name, classification, user_agent, style, count, first, last in rows:
@@ -867,16 +880,19 @@ def deliver_report(store, day: date, *, dry_run: bool) -> dict:
     stats = build_report(store, day)
     if dry_run:
         stats["email"] = {"status": "dry_run"}
+        _stage("email", day)
         return stats
     recipient = env_text("REPORT_EMAIL_TO")
     provider = store.email
     if provider is None:
         stats["email"] = {"status": NOT_CONFIGURED}
         log.warning(NOT_CONFIGURED)
+        _stage("email", day)
         return stats
     if not recipient:
         stats["email"] = {"status": REPORT_MISSING}
         log.warning(REPORT_MISSING)
+        _stage("email", day)
         return stats
     try:
         provider.send(
@@ -890,6 +906,7 @@ def deliver_report(store, day: date, *, dry_run: bool) -> dict:
     except Exception:
         log.warning("daily report email failed", exc_info=True)
         stats["email"] = {"status": "not_sent: email provider returned an error"}
+    _stage("email", day)
     return stats
 
 

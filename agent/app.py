@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 import os
+import threading
 import time
 from contextlib import asynccontextmanager
 
@@ -625,6 +626,44 @@ def _report_day(request: Request):
         return None
 
 
+_report_lock = threading.Lock()
+_report_cache: dict[str, dict] = {}
+_report_cache_guard = threading.Lock()
+REPORT_BUSY = "A daily report is already running."
+
+
+def reset_report_gate() -> None:
+    """Test helper. Drops the single-flight lock and the small day cache."""
+    with _report_cache_guard:
+        _report_cache.clear()
+    if _report_lock.locked():
+        try:
+            _report_lock.release()
+        except RuntimeError:
+            pass
+
+
+async def _run_exclusive(fn, *args, cache_key: str | None = None) -> JSONResponse:
+    """One heavy admin read at a time, off the event loop so /health can answer."""
+    if cache_key is not None:
+        with _report_cache_guard:
+            cached = _report_cache.get(cache_key)
+        if cached is not None:
+            return JSONResponse(cached)
+    if not _report_lock.acquire(blocking=False):
+        return JSONResponse({"error": REPORT_BUSY}, status_code=409)
+    try:
+        result = await asyncio.to_thread(fn, *args)
+    finally:
+        _report_lock.release()
+    if cache_key is not None:
+        with _report_cache_guard:
+            _report_cache[cache_key] = result
+            while len(_report_cache) > 4:
+                _report_cache.pop(next(iter(_report_cache)))
+    return JSONResponse(result)
+
+
 def _daily_report(store: Bookstore):
     async def daily_report(request: Request) -> Response:
         refused = _admin_guard(request)
@@ -634,7 +673,8 @@ def _daily_report(store: Bookstore):
         if day is None:
             return JSONResponse({"error": "date must be YYYY-MM-DD"}, status_code=400)
         dry_run = request.query_params.get("dry_run", "").lower() in {"1", "true", "yes"}
-        return JSONResponse(deliver_report(store, day, dry_run=dry_run))
+        key = f"{id(store)}:{day.isoformat()}:{'dry' if dry_run else 'send'}"
+        return await _run_exclusive(lambda: deliver_report(store, day, dry_run=dry_run), cache_key=key)
 
     return daily_report
 
@@ -648,7 +688,7 @@ def _conversations(store: Bookstore):
         if day is None:
             return JSONResponse({"error": "date must be YYYY-MM-DD"}, status_code=400)
         summarize = request.query_params.get("summarize", "").lower() in {"1", "true", "yes"}
-        return JSONResponse(public_threads(store, day, summarize=summarize))
+        return await _run_exclusive(lambda: public_threads(store, day, summarize=summarize))
 
     return conversations
 
@@ -661,7 +701,11 @@ def _stats(store: Bookstore):
         day = _report_day(request)
         if day is None:
             return JSONResponse({"error": "date must be YYYY-MM-DD"}, status_code=400)
-        return JSONResponse(public_stats(build_report(store, day)))
+
+        def _stats_body():
+            return public_stats(build_report(store, day))
+
+        return await _run_exclusive(_stats_body)
 
     return stats
 
