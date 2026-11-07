@@ -174,7 +174,7 @@ A2A_FAKE_LLM=1 uvicorn app:app --host 127.0.0.1 --port 8000
 Do not set `A2A_FAKE_LLM` on Render.
 
 ```bash
-A2A_FAKE_LLM=1 python -m unittest test_limits test_bookstore test_analytics test_conversations
+A2A_FAKE_LLM=1 python -m unittest test_limits test_bookstore test_analytics test_conversations test_memory
 ```
 
 ## curl
@@ -193,7 +193,7 @@ curl -s https://agent.agiq.top/ \
   -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"role":"user","messageId":"m1","parts":[{"kind":"data","data":{"action":"list_books"}}]}}}'
 ```
 
-Health: `curl -s https://agent.agiq.top/health`
+Health: `curl -s https://agent.agiq.top/health` returns `status` and `rss_kb` (resident memory, kilobytes). The startup log prints the same number and nothing else.
 
 ## Visits and the daily report
 
@@ -219,4 +219,4 @@ Add `?summarize=1` to attach a one-line goal, an intent category, and whether it
 
 ## Render
 
-`render.yaml` builds `agent/` and runs `uvicorn app:app --host 0.0.0.0 --port $PORT`. Set `OPENAI_API_KEY` for natural language. `RESEND_API_KEY`, `EMAIL_FROM`, the SMTP variables, `STRIPE_SECRET_KEY`, and `ADMIN_TOKEN` are `sync: false`. `EMAIL_REPLY_TO` and `REPORT_EMAIL_TO` are `mbueno74@hotmail.com`. Leave a secret as a hyphen when you are not using that provider. `MAX_DAILY_MESSAGES` is `30` and `MAX_DAILY_ACTIONS` is `1000`.
+`render.yaml` builds `agent/` and runs `uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1`. `WEB_CONCURRENCY` is `1` so a free 512 MB instance does not start a second process. LangGraph is imported on the first natural-language turn, not at boot. The daily report aggregates in SQL. Set `OPENAI_API_KEY` for natural language. `RESEND_API_KEY`, `EMAIL_FROM`, the SMTP variables, `STRIPE_SECRET_KEY`, and `ADMIN_TOKEN` are `sync: false`. `EMAIL_REPLY_TO` and `REPORT_EMAIL_TO` are `mbueno74@hotmail.com`. Leave a secret as a hyphen when you are not using that provider. `MAX_DAILY_MESSAGES` is `30` and `MAX_DAILY_ACTIONS` is `1000`.

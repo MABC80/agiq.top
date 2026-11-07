@@ -69,7 +69,20 @@ class MessageQuota:
 
     def _prune(self, ip: str) -> list[float]:
         cutoff = self._now() - 3600
-        return [stamp for stamp in self._hits.get(ip, []) if stamp >= cutoff]
+        hits = [stamp for stamp in self._hits.get(ip, []) if stamp >= cutoff]
+        self._remember(ip, hits)
+        return hits
+
+    def _remember(self, ip: str, hits: list[float]) -> None:
+        if hits:
+            self._hits[ip] = hits
+        else:
+            self._hits.pop(ip, None)
+        if len(self._hits) <= 2000:
+            return
+        ranked = sorted(self._hits.items(), key=lambda item: item[1][-1] if item[1] else 0)
+        for key, _value in ranked[: len(self._hits) - 2000]:
+            self._hits.pop(key, None)
 
     def reason(self, ip: str) -> str | None:
         """Why this IP cannot send, without counting the attempt."""
@@ -87,10 +100,9 @@ class MessageQuota:
             return "daily"
         hits = self._prune(ip)
         if len(hits) >= self.per_ip_per_hour:
-            self._hits[ip] = hits
             return "ip"
         hits.append(self._now())
-        self._hits[ip] = hits
+        self._remember(ip, hits)
         self._daily_count += 1
         return None
 

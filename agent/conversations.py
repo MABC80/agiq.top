@@ -299,11 +299,22 @@ def _aware(moment: datetime) -> datetime:
 
 def load_threads(store, start: datetime, end: datetime) -> list[dict]:
     with store.Session() as session:
-        rows = [
-            row
-            for row in session.scalars(select(ConversationMessage)).all()
-            if start <= _aware(row.created_at) < end
-        ]
+        selected = session.execute(
+            select(
+                ConversationMessage.created_at,
+                ConversationMessage.visitor_hash,
+                ConversationMessage.actor_name,
+                ConversationMessage.classification,
+                ConversationMessage.context_id,
+                ConversationMessage.task_id,
+                ConversationMessage.style,
+                ConversationMessage.action_name,
+                ConversationMessage.inbound,
+                ConversationMessage.reply,
+            )
+            .where(ConversationMessage.created_at >= start, ConversationMessage.created_at < end)
+            .order_by(ConversationMessage.created_at, ConversationMessage.id)
+        ).all()
         plain = [
             {
                 "created_at": _aware(row.created_at),
@@ -317,10 +328,10 @@ def load_threads(store, start: datetime, end: datetime) -> list[dict]:
                 "inbound": row.inbound,
                 "reply": row.reply,
             }
-            for row in rows
+            for row in selected
         ]
     grouped: dict[tuple[str, str], dict] = {}
-    for row in sorted(plain, key=lambda item: item["created_at"]):
+    for row in plain:
         key = (row["visitor_hash"], row["context_id"] or "")
         thread = grouped.get(key)
         if thread is None:
