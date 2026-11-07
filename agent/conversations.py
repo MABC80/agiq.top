@@ -297,13 +297,40 @@ def _aware(moment: datetime) -> datetime:
     return moment.astimezone(timezone.utc)
 
 
-def load_threads(store, start: datetime, end: datetime) -> list[dict]:
+MESSAGE_LIMIT = 200
+MESSAGE_TEXT_CHARS = 500
+
+
+def load_threads(
+    store,
+    start: datetime,
+    end: datetime,
+    *,
+    limit: int = MESSAGE_LIMIT,
+    text_chars: int = MESSAGE_TEXT_CHARS,
+) -> list[dict]:
+    """Latest turns only, with text cut in SQL so a long day cannot fill RAM."""
+    from sqlalchemy import func
+
     with store.Session() as session:
-        rows = [
-            row
-            for row in session.scalars(select(ConversationMessage)).all()
-            if start <= _aware(row.created_at) < end
-        ]
+        selected = session.execute(
+            select(
+                ConversationMessage.created_at,
+                ConversationMessage.visitor_hash,
+                ConversationMessage.actor_name,
+                ConversationMessage.classification,
+                ConversationMessage.context_id,
+                ConversationMessage.task_id,
+                ConversationMessage.style,
+                ConversationMessage.action_name,
+                func.substr(ConversationMessage.inbound, 1, text_chars).label("inbound"),
+                func.substr(ConversationMessage.reply, 1, text_chars).label("reply"),
+            )
+            .where(ConversationMessage.created_at >= start, ConversationMessage.created_at < end)
+            .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
+            .limit(limit)
+        ).all()
+        selected.reverse()
         plain = [
             {
                 "created_at": _aware(row.created_at),
@@ -317,10 +344,10 @@ def load_threads(store, start: datetime, end: datetime) -> list[dict]:
                 "inbound": row.inbound,
                 "reply": row.reply,
             }
-            for row in rows
+            for row in selected
         ]
     grouped: dict[tuple[str, str], dict] = {}
-    for row in sorted(plain, key=lambda item: item["created_at"]):
+    for row in plain:
         key = (row["visitor_hash"], row["context_id"] or "")
         thread = grouped.get(key)
         if thread is None:

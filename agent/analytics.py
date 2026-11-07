@@ -13,15 +13,15 @@ import re
 import secrets
 import threading
 import time
-from collections import Counter
 from datetime import date, datetime, time as clock, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, select
+from sqlalchemy import case, delete, distinct, func, or_, select
 
 from db import ConversationMessage, DailySalt, Visit, env_text, utcnow
 from emailer import NOT_CONFIGURED
 from invoicing import money
+from memory import rss_kb
 from quota import DEFAULT_DAILY_LIMIT, parse_limit, DAILY_LIMIT_ENV
 
 log = logging.getLogger("agiq.analytics")
@@ -328,11 +328,22 @@ class PageviewLimiter:
         with self._lock:
             recent = [stamp for stamp in self._hits.get(key, []) if now - stamp < 3600]
             if len(recent) >= limit:
-                self._hits[key] = recent
+                self._remember(key, recent)
                 return False
             recent.append(now)
-            self._hits[key] = recent
+            self._remember(key, recent)
             return True
+
+    def _remember(self, key: str, recent: list[float]) -> None:
+        if recent:
+            self._hits[key] = recent
+        else:
+            self._hits.pop(key, None)
+        if len(self._hits) <= 2000:
+            return
+        ranked = sorted(self._hits.items(), key=lambda item: item[1][-1] if item[1] else 0)
+        for stale, _value in ranked[: len(self._hits) - 2000]:
+            self._hits.pop(stale, None)
 
 
 class Recorder:
@@ -340,6 +351,7 @@ class Recorder:
         self.store = store
         self.limiter = PageviewLimiter()
         self._salt_lock = threading.Lock()
+        self._pruned_at = 0.0
 
     def hash_ip(self, address: str, moment: datetime | None = None) -> str:
         moment = moment or utcnow()
@@ -363,6 +375,15 @@ class Recorder:
         session.execute(delete(Visit).where(Visit.created_at < cutoff))
         conversation_cutoff = utcnow() - timedelta(days=CONVERSATION_RETENTION_DAYS)
         session.execute(delete(ConversationMessage).where(ConversationMessage.created_at < conversation_cutoff))
+        self._pruned_at = time.time()
+
+    def maybe_prune(self, session, path: str) -> None:
+        """Health checks must stay cheap. Other requests prune at most once an hour."""
+        if path == "/health":
+            return
+        if time.time() - self._pruned_at < 3600:
+            return
+        self.prune(session)
 
     def record_request(self, scope, body: bytes, status_code: int, latency_ms: int, response_body: bytes = b"") -> None:
         state = scope.get("state") or {}
@@ -385,7 +406,7 @@ class Recorder:
         address = client_address(scope)
         referer = parsed["referer"] if parsed["referer"] is not None else clip(headers.get("referer", ""), 500)
         with self.store.Session() as session:
-            self.prune(session)
+            self.maybe_prune(session, path)
             visit = Visit(
                 kind=kind_for(path),
                 method=clip(scope.get("method") or "", 8),
@@ -448,123 +469,235 @@ def _aware(moment: datetime) -> datetime:
     return moment.astimezone(timezone.utc)
 
 
-def _in_window(moment: datetime, start: datetime, end: datetime) -> bool:
-    stamp = _aware(moment)
-    return start <= stamp < end
+def _as_dt(value) -> datetime:
+    if isinstance(value, datetime):
+        return _aware(value)
+    text = str(value).replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        parsed = datetime.strptime(text[:19], "%Y-%m-%d %H:%M:%S")
+    return _aware(parsed)
+
+
+def _count(session, *where) -> int:
+    value = session.scalar(select(func.count()).select_from(Visit).where(*where))
+    return int(value or 0)
+
+
+def _pairs_from(session, column, *where, label: str, limit: int | None = None) -> list[dict]:
+    statement = select(column, func.count()).where(*where).group_by(column).order_by(func.count().desc(), column.asc())
+    if limit is not None:
+        statement = statement.limit(limit)
+    return [{label: name, "count": int(count)} for name, count in session.execute(statement).all()]
+
+
+def _stage(stage: str, day: date) -> None:
+    log.info("daily report stage=%s date=%s rss_kb=%s", stage, day.isoformat(), rss_kb())
 
 
 def build_report(store, day: date) -> dict:
+    """Aggregate one Berlin day in SQL. Do not load visit rows or invoice files."""
+    _stage("start", day)
     start, end = berlin_window(day)
-    with store.Session() as session:
-        visits = [row for row in session.scalars(select(Visit)).all() if _in_window(row.created_at, start, end)]
-        from db import Cart, Customer, Invoice, Order, Payment
+    from db import Cart, Customer, Invoice, Order, Payment
 
-        customers = [row for row in session.scalars(select(Customer)).all() if _in_window(row.created_at, start, end)]
-        carts = [row for row in session.scalars(select(Cart)).all() if _in_window(row.created_at, start, end)]
-        orders = [row for row in session.scalars(select(Order)).all() if _in_window(row.created_at, start, end)]
-        payments = [row for row in session.scalars(select(Payment)).all() if _in_window(row.created_at, start, end)]
-        invoices = [row for row in session.scalars(select(Invoice)).all() if _in_window(row.created_at, start, end)]
-        sandbox_cents = 0
-        for payment in payments:
-            if payment.status != "succeeded" or not payment.sandbox:
-                continue
-            order = session.get(Order, payment.order_id)
-            if order is not None:
-                sandbox_cents += order.total_cents
-    traffic = [row for row in visits if row.kind not in {"monitor", "admin"}]
-    classes = Counter(row.classification for row in traffic)
-    kinds = Counter(row.kind for row in traffic)
-    styles = Counter(row.style for row in traffic if row.style)
-    actions = Counter(row.action_name for row in traffic if row.style == "structured" and row.action_name)
-    tools = Counter(row.action_name for row in traffic if row.style == "mcp" and row.action_name)
-    countries = Counter(row.country or "unknown" for row in traffic)
-    pages = [row for row in traffic if row.kind == "page_view"]
-    referrers = Counter((row.referer or "(direct)") for row in pages)
-    unique = {row.ip_hash for row in traffic}
-    actors = _actors(traffic)
-    succeeded = [row for row in payments if row.status == "succeeded"]
-    llm_calls = sum(
-        1
-        for row in traffic
-        if row.style == "natural_language" and not row.quota_limited and 200 <= row.status_code < 300
-    )
+    with store.Session() as session:
+        window = (Visit.created_at >= start, Visit.created_at < end)
+        traffic = (*window, Visit.kind.notin_(("monitor", "admin")))
+        classes = dict(
+            session.execute(
+                select(Visit.classification, func.count()).where(*traffic).group_by(Visit.classification)
+            ).all()
+        )
+        kinds = dict(
+            session.execute(select(Visit.kind, func.count()).where(*traffic).group_by(Visit.kind)).all()
+        )
+        style_counts = dict(
+            session.execute(
+                select(Visit.style, func.count()).where(*traffic, Visit.style.is_not(None)).group_by(Visit.style)
+            ).all()
+        )
+        actions = _pairs_from(
+            session,
+            Visit.action_name,
+            *traffic,
+            Visit.style == "structured",
+            Visit.action_name.is_not(None),
+            Visit.action_name != "",
+            label="name",
+            limit=10,
+        )
+        tools = _pairs_from(
+            session,
+            Visit.action_name,
+            *traffic,
+            Visit.style == "mcp",
+            Visit.action_name.is_not(None),
+            Visit.action_name != "",
+            label="name",
+            limit=10,
+        )
+        country = case((or_(Visit.country.is_(None), Visit.country == ""), "unknown"), else_=Visit.country)
+        countries = _pairs_from(session, country, *traffic, label="country", limit=30)
+        referrer = case((or_(Visit.referer.is_(None), Visit.referer == ""), "(direct)"), else_=Visit.referer)
+        referrers = _pairs_from(
+            session,
+            referrer,
+            *window,
+            Visit.kind == "page_view",
+            label="referrer",
+            limit=10,
+        )
+        unique = session.scalar(select(func.count(distinct(Visit.ip_hash))).where(*traffic))
+        requests = _count(session, *traffic)
+        page_views = _count(session, *window, Visit.kind == "page_view")
+        human_views = _count(session, *window, Visit.kind == "page_view", Visit.classification == "human")
+        llm_calls = _count(
+            session,
+            *traffic,
+            Visit.style == "natural_language",
+            Visit.quota_limited.is_(False),
+            Visit.status_code >= 200,
+            Visit.status_code < 300,
+        )
+        errors_4xx = _count(session, *traffic, Visit.status_code >= 400, Visit.status_code < 500)
+        errors_5xx = _count(session, *traffic, Visit.status_code >= 500)
+        monitors = _count(session, *window, Visit.kind == "monitor")
+        admin_calls = _count(session, *window, Visit.kind == "admin")
+        customers = _count_model(session, Customer, Customer.created_at >= start, Customer.created_at < end)
+        carts = _count_model(session, Cart, Cart.created_at >= start, Cart.created_at < end)
+        orders = _count_model(session, Order, Order.created_at >= start, Order.created_at < end)
+        invoices = _count_model(session, Invoice, Invoice.created_at >= start, Invoice.created_at < end)
+        succeeded = _count_model(
+            session,
+            Payment,
+            Payment.created_at >= start,
+            Payment.created_at < end,
+            Payment.status == "succeeded",
+        )
+        declined = _count_model(
+            session,
+            Payment,
+            Payment.created_at >= start,
+            Payment.created_at < end,
+            Payment.status == "declined",
+        )
+        sandbox_cents = session.scalar(
+            select(func.coalesce(func.sum(Order.total_cents), 0))
+            .select_from(Payment)
+            .join(Order, Order.id == Payment.order_id)
+            .where(
+                Payment.created_at >= start,
+                Payment.created_at < end,
+                Payment.status == "succeeded",
+                Payment.sandbox.is_(True),
+            )
+        )
+        actors = _actors(session, start, end)
+    _stage("aggregates", day)
     stats = {
         "date": day.isoformat(),
         "timezone": "Europe/Berlin",
         "from": start.isoformat(),
         "until": end.isoformat(),
-        "totals": {"requests": len(traffic), "unique_visitors": len(unique)},
+        "totals": {"requests": requests, "unique_visitors": int(unique or 0)},
         "classifications": {
-            "human": classes.get("human", 0),
-            "known_bot": classes.get("known_bot", 0),
-            "ai_agent": classes.get("ai_agent", 0),
-            "unknown": classes.get("unknown", 0),
+            "human": int(classes.get("human", 0)),
+            "known_bot": int(classes.get("known_bot", 0)),
+            "ai_agent": int(classes.get("ai_agent", 0)),
+            "unknown": int(classes.get("unknown", 0)),
         },
-        "by_kind": dict(sorted(kinds.items())),
+        "by_kind": dict(sorted((name, int(count)) for name, count in kinds.items())),
         "styles": {
-            "structured": styles.get("structured", 0),
-            "natural_language": styles.get("natural_language", 0),
-            "mcp": styles.get("mcp", 0),
-            "top_actions": [{"name": name, "count": count} for name, count in actions.most_common(10)],
-            "top_tools": [{"name": name, "count": count} for name, count in tools.most_common(10)],
+            "structured": int(style_counts.get("structured", 0)),
+            "natural_language": int(style_counts.get("natural_language", 0)),
+            "mcp": int(style_counts.get("mcp", 0)),
+            "top_actions": actions,
+            "top_tools": tools,
         },
         "actors": actors,
         "landing": {
-            "views": len(pages),
-            "human_views": sum(1 for row in pages if row.classification == "human"),
-            "top_referrers": [{"referrer": name, "count": count} for name, count in referrers.most_common(10)],
+            "views": page_views,
+            "human_views": human_views,
+            "top_referrers": referrers,
         },
-        "countries": [{"country": name, "count": count} for name, count in countries.most_common()],
+        "countries": countries,
         "funnel": {
-            "customers_registered": len(customers),
-            "carts": len(carts),
-            "checkouts": len(orders),
-            "payments_succeeded": len(succeeded),
-            "payments_declined": sum(1 for row in payments if row.status == "declined"),
-            "invoices": len(invoices),
-            "sandbox_revenue_usd": money(sandbox_cents),
+            "customers_registered": customers,
+            "carts": carts,
+            "checkouts": orders,
+            "payments_succeeded": succeeded,
+            "payments_declined": declined,
+            "invoices": invoices,
+            "sandbox_revenue_usd": money(int(sandbox_cents or 0)),
         },
         "llm": {"calls": llm_calls, "daily_cap": parse_limit(DAILY_LIMIT_ENV, DEFAULT_DAILY_LIMIT)},
-        "errors": {
-            "4xx": sum(1 for row in traffic if 400 <= row.status_code < 500),
-            "5xx": sum(1 for row in traffic if row.status_code >= 500),
-        },
-        "monitors": sum(1 for row in visits if row.kind == "monitor"),
-        "admin_calls": sum(1 for row in visits if row.kind == "admin"),
+        "errors": {"4xx": errors_4xx, "5xx": errors_5xx},
+        "monitors": monitors,
+        "admin_calls": admin_calls,
     }
     from conversations import load_threads, summarize_threads, visit_goal_section
 
     threads = load_threads(store, start, end)
+    _stage("conversations", day)
     stats["visit_goals"] = visit_goal_section(threads, summarize_threads(threads))
+    _stage("summary", day)
     text = render_text(stats)
-    return {**stats, "text": text, "html": render_html(stats)}
+    rendered = {**stats, "text": text, "html": render_html(stats)}
+    _stage("render", day)
+    return rendered
 
 
-def _actors(rows: list) -> list[dict]:
+def _count_model(session, model, *where) -> int:
+    value = session.scalar(select(func.count()).select_from(model).where(*where))
+    return int(value or 0)
+
+
+def _actors(session, start: datetime, end: datetime) -> list[dict]:
+    rows = session.execute(
+        select(
+            Visit.agent_name,
+            Visit.classification,
+            Visit.user_agent,
+            Visit.style,
+            func.count(),
+            func.min(Visit.created_at),
+            func.max(Visit.created_at),
+        )
+        .where(
+            Visit.created_at >= start,
+            Visit.created_at < end,
+            Visit.kind.notin_(("monitor", "admin")),
+        )
+        .group_by(Visit.agent_name, Visit.classification, Visit.user_agent, Visit.style)
+        .order_by(func.count().desc())
+        .limit(200)
+    ).all()
     grouped: dict[tuple, dict] = {}
-    for row in rows:
-        if row.classification not in {"known_bot", "ai_agent"} and not row.agent_name:
+    for agent_name, classification, user_agent, style, count, first, last in rows:
+        if classification not in {"known_bot", "ai_agent"} and not agent_name:
             continue
-        name = row.agent_name or row.user_agent[:80] or "(unnamed)"
-        key = (name, row.classification, row.user_agent)
+        user_agent = user_agent or ""
+        name = agent_name or user_agent[:80] or "(unnamed)"
+        key = (name, classification, user_agent)
         bucket = grouped.get(key)
         if bucket is None:
             bucket = {
                 "name": name,
-                "user_agent": row.user_agent,
-                "classification": row.classification,
-                "first_seen": _aware(row.created_at),
-                "last_seen": _aware(row.created_at),
+                "user_agent": user_agent,
+                "classification": classification,
+                "first_seen": _as_dt(first),
+                "last_seen": _as_dt(last),
                 "requests": 0,
                 "styles": set(),
             }
             grouped[key] = bucket
-        bucket["requests"] += 1
-        stamp = _aware(row.created_at)
-        bucket["first_seen"] = min(bucket["first_seen"], stamp)
-        bucket["last_seen"] = max(bucket["last_seen"], stamp)
-        if row.style:
-            bucket["styles"].add(row.style)
+        bucket["requests"] += int(count)
+        bucket["first_seen"] = min(bucket["first_seen"], _as_dt(first))
+        bucket["last_seen"] = max(bucket["last_seen"], _as_dt(last))
+        if style:
+            bucket["styles"].add(style)
     actors = []
     for bucket in grouped.values():
         actors.append(
@@ -747,16 +880,19 @@ def deliver_report(store, day: date, *, dry_run: bool) -> dict:
     stats = build_report(store, day)
     if dry_run:
         stats["email"] = {"status": "dry_run"}
+        _stage("email", day)
         return stats
     recipient = env_text("REPORT_EMAIL_TO")
     provider = store.email
     if provider is None:
         stats["email"] = {"status": NOT_CONFIGURED}
         log.warning(NOT_CONFIGURED)
+        _stage("email", day)
         return stats
     if not recipient:
         stats["email"] = {"status": REPORT_MISSING}
         log.warning(REPORT_MISSING)
+        _stage("email", day)
         return stats
     try:
         provider.send(
@@ -770,6 +906,7 @@ def deliver_report(store, day: date, *, dry_run: bool) -> dict:
     except Exception:
         log.warning("daily report email failed", exc_info=True)
         stats["email"] = {"status": "not_sent: email provider returned an error"}
+    _stage("email", day)
     return stats
 
 

@@ -3,7 +3,6 @@
 import functools
 import json
 
-from langchain_core.tools import tool
 from mcp.server.mcpserver import MCPServer
 
 from bookstore import Bookstore
@@ -139,6 +138,8 @@ def make_functions(store: Bookstore):
 
 
 def langchain_tools(functions):
+    from langchain_core.tools import tool
+
     wrapped = []
     for fn in functions:
         def text_tool(fn=fn):

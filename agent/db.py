@@ -212,6 +212,8 @@ def make_engine(url: str | None = None):
         kwargs["connect_args"] = {"check_same_thread": False}
     else:
         kwargs["pool_pre_ping"] = True
+        kwargs["pool_size"] = 2
+        kwargs["max_overflow"] = 0
     return create_engine(target, **kwargs), target
 
 

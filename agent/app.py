@@ -1,11 +1,12 @@
 """A2A bookstore: structured DataPart actions, or English text through LangGraph."""
 
+import asyncio
 import base64
 import json
 import logging
 import os
+import threading
 import time
-from collections.abc import Sequence
 from contextlib import asynccontextmanager
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
@@ -29,11 +30,6 @@ from a2a.types import (
 )
 from a2a.utils import new_agent_text_message, new_task
 from a2a.utils.errors import ServerError
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
-from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
@@ -42,6 +38,7 @@ from actions import ACTIONS, skill_description
 from analytics import PAGE_ORIGIN, Recorder, authorize, build_report, deliver_report, parse_day, public_stats
 from conversations import public_threads
 from bookstore import Bookstore
+from memory import rss_kb
 from quota import LIMITED_METHODS, ActionQuota, MessageQuota, message_for, rpc_error
 from tools import build_mcp, langchain_tools, make_functions
 
@@ -60,33 +57,29 @@ SYSTEM_PROMPT = (
     "repeat the full number in your reply. Reply in English."
 )
 WORKING_ACTIONS = frozenset({"checkout", "pay", "generate_invoice", "notify_order"})
+MAX_REQUEST_BODY = 256 * 1024
+MAX_RESPONSE_CAPTURE = 128 * 1024
+TASK_STORE_LIMIT = 100
 log_analytics = logging.getLogger("agiq.analytics")
+log_memory = logging.getLogger("agiq.memory")
 
 
-class FakeChatModel(BaseChatModel):
-    """Echo model used only when A2A_FAKE_LLM=1 (local tests, no API key)."""
+class BoundedTaskStore(InMemoryTaskStore):
+    """Keep only the newest tasks. The default store never forgets a thread."""
 
-    @property
-    def _llm_type(self) -> str:
-        return "fake"
+    def __init__(self, limit: int = TASK_STORE_LIMIT) -> None:
+        super().__init__()
+        self.limit = limit
+        self._order: list[str] = []
 
-    def bind_tools(self, tools, **kwargs):  # noqa: ANN001
-        return self
-
-    def _generate(
-        self,
-        messages: Sequence[BaseMessage],
-        stop: list[str] | None = None,
-        run_manager=None,  # noqa: ANN001
-        **kwargs,
-    ) -> ChatResult:
-        text = ""
-        for message in reversed(messages):
-            if isinstance(message, HumanMessage) and isinstance(message.content, str):
-                text = message.content.strip()
-                break
-        reply = AIMessage(content=f"echo: {text}")
-        return ChatResult(generations=[ChatGeneration(message=reply)])
+    async def save(self, task, *args, **kwargs) -> None:
+        await super().save(task, *args, **kwargs)
+        task_id = task.id
+        if task_id in self._order:
+            self._order.remove(task_id)
+        self._order.append(task_id)
+        while len(self._order) > self.limit:
+            self.tasks.pop(self._order.pop(0), None)
 
 
 def use_fake_llm() -> bool:
@@ -101,16 +94,56 @@ def model_name() -> str:
     return os.environ.get("OPENAI_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
 
 
-def build_model() -> BaseChatModel:
+def build_model():
     if use_fake_llm():
+        from langchain_core.language_models.chat_models import BaseChatModel
+        from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+        from langchain_core.outputs import ChatGeneration, ChatResult
+
+        class FakeChatModel(BaseChatModel):
+            """Echo model used only when A2A_FAKE_LLM=1 (local tests, no API key)."""
+
+            @property
+            def _llm_type(self) -> str:
+                return "fake"
+
+            def bind_tools(self, tools, **kwargs):  # noqa: ANN001
+                return self
+
+            def _generate(
+                self,
+                messages: list[BaseMessage],
+                stop: list[str] | None = None,
+                run_manager=None,  # noqa: ANN001
+                **kwargs,
+            ) -> ChatResult:
+                text = ""
+                for message in reversed(messages):
+                    if isinstance(message, HumanMessage) and isinstance(message.content, str):
+                        text = message.content.strip()
+                        break
+                reply = AIMessage(content=f"echo: {text}")
+                return ChatResult(generations=[ChatGeneration(message=reply)])
+
         return FakeChatModel()
+    from langchain_openai import ChatOpenAI
+
     # ChatOpenAI reads OPENAI_API_KEY from the environment. Do not pass the key here.
     return ChatOpenAI(model=model_name())
 
 
 def build_graph(store: Bookstore):
+    """Load LangGraph only for a natural-language turn. No checkpointer is attached."""
+    from langgraph.prebuilt import create_react_agent
+
     functions = make_functions(store)
-    return create_react_agent(build_model(), tools=langchain_tools(functions), prompt=SYSTEM_PROMPT), functions
+    graph = create_react_agent(
+        build_model(),
+        tools=langchain_tools(functions),
+        prompt=SYSTEM_PROMPT,
+        checkpointer=None,
+    )
+    return graph, functions
 
 
 def text_from_result(result: dict) -> str:
@@ -139,9 +172,18 @@ def structured_payload(message) -> dict | None:
 
 
 class BookstoreExecutor(AgentExecutor):
-    def __init__(self, graph, store: Bookstore) -> None:
+    def __init__(self, store: Bookstore, graph=None) -> None:
         self._graph = graph
         self._store = store
+        self._graph_lock = asyncio.Lock()
+
+    async def _graph_for_text(self):
+        if self._graph is not None:
+            return self._graph
+        async with self._graph_lock:
+            if self._graph is None:
+                self._graph, _functions = build_graph(self._store)
+            return self._graph
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         if context.message is None:
@@ -159,7 +201,8 @@ class BookstoreExecutor(AgentExecutor):
         if not user_text:
             raise ServerError(InvalidParamsError(message="The message has no text."))
         try:
-            result = await self._graph.ainvoke({"messages": [("user", user_text)]})
+            graph = await self._graph_for_text()
+            result = await graph.ainvoke({"messages": [("user", user_text)]})
             reply = text_from_result(result) or "(no reply)"
         except Exception as exc:
             detail = str(exc).splitlines()[0][:500]
@@ -265,7 +308,7 @@ def card_dict() -> dict:
 
 
 def health(_: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok"})
+    return JSONResponse({"status": "ok", "rss_kb": rss_kb()})
 
 
 def client_ip(scope) -> str:
@@ -388,15 +431,25 @@ class AnalyticsMiddleware:
         started = time.perf_counter()
         status = {"code": 500}
         body = b""
+        too_big = False
         method = scope.get("method") or ""
         if method in {"POST", "PUT", "PATCH"}:
             chunks = []
             while True:
                 message = await receive()
-                chunks.append(message)
+                if not too_big:
+                    chunks.append(message)
                 if message["type"] != "http.request":
                     break
-                body += message.get("body") or b""
+                piece = message.get("body") or b""
+                if not isinstance(piece, bytes):
+                    piece = bytes(piece)
+                if not too_big:
+                    body += piece
+                    if len(body) > MAX_REQUEST_BODY:
+                        too_big = True
+                        body = b""
+                        chunks.clear()
                 if not message.get("more_body", False):
                     break
 
@@ -416,7 +469,7 @@ class AnalyticsMiddleware:
                 chunk = message.get("body") or b""
                 if not isinstance(chunk, bytes):
                     chunk = bytes(chunk)
-                if len(captured["body"]) + len(chunk) <= 524288:
+                if len(captured["body"]) + len(chunk) <= MAX_RESPONSE_CAPTURE:
                     captured["body"] += chunk
                 else:
                     captured["keep"] = False
@@ -424,7 +477,11 @@ class AnalyticsMiddleware:
             await send(message)
 
         try:
-            await self.app(scope, receive_call, send_call)
+            if too_big:
+                response = JSONResponse({"error": "Request body is too large."}, status_code=413)
+                await response(scope, receive_call, send_call)
+            else:
+                await self.app(scope, receive_call, send_call)
         finally:
             elapsed = int((time.perf_counter() - started) * 1000)
             try:
@@ -482,11 +539,9 @@ def create_app(
 ):
     bookstore = store or Bookstore(database_url=database_url, public_base=public_url())
     functions = make_functions(bookstore)
-    if graph is None:
-        graph, _functions = build_graph(bookstore)
     handler = DefaultRequestHandler(
-        agent_executor=BookstoreExecutor(graph, bookstore),
-        task_store=InMemoryTaskStore(),
+        agent_executor=BookstoreExecutor(bookstore, graph),
+        task_store=BoundedTaskStore(),
     )
     mcp = build_mcp(functions)
     mcp_http = mcp.streamable_http_app(
@@ -571,6 +626,44 @@ def _report_day(request: Request):
         return None
 
 
+_report_lock = threading.Lock()
+_report_cache: dict[str, dict] = {}
+_report_cache_guard = threading.Lock()
+REPORT_BUSY = "A daily report is already running."
+
+
+def reset_report_gate() -> None:
+    """Test helper. Drops the single-flight lock and the small day cache."""
+    with _report_cache_guard:
+        _report_cache.clear()
+    if _report_lock.locked():
+        try:
+            _report_lock.release()
+        except RuntimeError:
+            pass
+
+
+async def _run_exclusive(fn, *args, cache_key: str | None = None) -> JSONResponse:
+    """One heavy admin read at a time, off the event loop so /health can answer."""
+    if cache_key is not None:
+        with _report_cache_guard:
+            cached = _report_cache.get(cache_key)
+        if cached is not None:
+            return JSONResponse(cached)
+    if not _report_lock.acquire(blocking=False):
+        return JSONResponse({"error": REPORT_BUSY}, status_code=409)
+    try:
+        result = await asyncio.to_thread(fn, *args)
+    finally:
+        _report_lock.release()
+    if cache_key is not None:
+        with _report_cache_guard:
+            _report_cache[cache_key] = result
+            while len(_report_cache) > 4:
+                _report_cache.pop(next(iter(_report_cache)))
+    return JSONResponse(result)
+
+
 def _daily_report(store: Bookstore):
     async def daily_report(request: Request) -> Response:
         refused = _admin_guard(request)
@@ -580,7 +673,8 @@ def _daily_report(store: Bookstore):
         if day is None:
             return JSONResponse({"error": "date must be YYYY-MM-DD"}, status_code=400)
         dry_run = request.query_params.get("dry_run", "").lower() in {"1", "true", "yes"}
-        return JSONResponse(deliver_report(store, day, dry_run=dry_run))
+        key = f"{id(store)}:{day.isoformat()}:{'dry' if dry_run else 'send'}"
+        return await _run_exclusive(lambda: deliver_report(store, day, dry_run=dry_run), cache_key=key)
 
     return daily_report
 
@@ -594,7 +688,7 @@ def _conversations(store: Bookstore):
         if day is None:
             return JSONResponse({"error": "date must be YYYY-MM-DD"}, status_code=400)
         summarize = request.query_params.get("summarize", "").lower() in {"1", "true", "yes"}
-        return JSONResponse(public_threads(store, day, summarize=summarize))
+        return await _run_exclusive(lambda: public_threads(store, day, summarize=summarize))
 
     return conversations
 
@@ -607,7 +701,11 @@ def _stats(store: Bookstore):
         day = _report_day(request)
         if day is None:
             return JSONResponse({"error": "date must be YYYY-MM-DD"}, status_code=400)
-        return JSONResponse(public_stats(build_report(store, day)))
+
+        def _stats_body():
+            return public_stats(build_report(store, day))
+
+        return await _run_exclusive(_stats_body)
 
     return stats
 
@@ -624,6 +722,7 @@ def _invoice(kind: str, store: Bookstore):
 
 
 app = create_app()
+log_memory.info("startup rss_kb=%s", rss_kb())
 
 
 if __name__ == "__main__":
